@@ -22,9 +22,10 @@ def test_firms_parse_time_and_domain():
 
 def test_openaq_reading_drops_old_and_bad():
     def item(utc, value=50.0):
-        return {"datetime": {"utc": utc}, "value": value, "locationsId": 1}
+        return {"datetime": {"utc": utc}, "value": value, "locationsId": 1, "sensorsId": 9}
 
-    assert stations.openaq_reading(item("2026-11-14T11:00:00Z"), NOW)["value"] == 50.0
+    ok = stations.openaq_reading(item("2026-11-14T11:00:00Z"), NOW)
+    assert ok["value"] == 50.0 and ok["sensor_id"] == "9"
     assert stations.openaq_reading(item("2018-02-22T04:00:00Z"), NOW) is None
     assert stations.openaq_reading(item("2026-11-14T11:00:00Z", -999), NOW) is None
     assert stations.openaq_reading(item("2026-11-15T11:00:00Z"), NOW) is None  # future

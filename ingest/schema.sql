@@ -54,6 +54,7 @@ CREATE INDEX IF NOT EXISTS station_geom_idx ON station USING gist (geom);
 CREATE TABLE IF NOT EXISTS station_reading (
     source          text NOT NULL,
     station_id      text NOT NULL,
+    sensor_id       text NOT NULL DEFAULT '',  -- a station can have several sensors
     parameter       text NOT NULL,
     unit            text NOT NULL,
     value           real NOT NULL,
@@ -61,9 +62,22 @@ CREATE TABLE IF NOT EXISTS station_reading (
     published_at    timestamptz NOT NULL,
     published_basis text NOT NULL,
     ingested_at     timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (source, station_id, parameter, observed_at),
+    PRIMARY KEY (source, station_id, sensor_id, parameter, observed_at),
     FOREIGN KEY (source, station_id) REFERENCES station (source, station_id)
 );
+-- Upgrade a table created before sensor_id existed (old rows keep sensor_id = '').
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'station_reading' AND column_name = 'sensor_id'
+    ) THEN
+        ALTER TABLE station_reading ADD COLUMN sensor_id text NOT NULL DEFAULT '';
+        ALTER TABLE station_reading DROP CONSTRAINT station_reading_pkey;
+        ALTER TABLE station_reading
+            ADD PRIMARY KEY (source, station_id, sensor_id, parameter, observed_at);
+    END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS station_reading_obs_idx ON station_reading (observed_at);
 
 -- CAMS PM2.5 forecast at the receptors (baseline, via Open-Meteo). Every fetch is kept

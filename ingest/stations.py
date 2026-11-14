@@ -25,11 +25,16 @@ INSERT_STATION = """
         geom = EXCLUDED.geom, updated_at = now()
 """
 INSERT_READING = """
-    INSERT INTO station_reading (source, station_id, parameter, unit, value, observed_at,
-        published_at, published_basis)
-    VALUES (%(source)s, %(station_id)s, %(parameter)s, %(unit)s, %(value)s, %(observed_at)s,
+    INSERT INTO station_reading (source, station_id, sensor_id, parameter, unit, value,
+        observed_at, published_at, published_basis)
+    VALUES (%(source)s, %(station_id)s, %(sensor_id)s, %(parameter)s, %(unit)s, %(value)s,
+        %(observed_at)s,
         %(pub)s, 'first_seen')
     ON CONFLICT DO NOTHING
+"""
+DROP_PRE_SENSOR_ROW = """
+    DELETE FROM station_reading WHERE source = %(source)s AND station_id = %(station_id)s
+        AND sensor_id = '' AND parameter = %(parameter)s AND observed_at = %(observed_at)s
 """
 
 
@@ -74,6 +79,7 @@ def openaq_reading(item: dict, now: datetime) -> dict | None:
     return {
         "source": "openaq",
         "station_id": str(item["locationsId"]),
+        "sensor_id": str(item.get("sensorsId") or ""),
         "parameter": "pm25",
         "unit": "µg/m³",
         "value": float(value),
@@ -103,6 +109,7 @@ def ingest_openaq(conn) -> tuple[str, int, str]:
     with conn.cursor() as cur:
         cur.executemany(INSERT_STATION, list(stations.values()))
         for r in readings:
+            cur.execute(DROP_PRE_SENSOR_ROW, r)  # same reading stored before sensor ids
             cur.execute(INSERT_READING, {**r, "pub": now})
             new += cur.rowcount
     conn.commit()
@@ -127,6 +134,7 @@ def datagov_rows(records: list[dict]) -> list[dict]:
             {
                 "source": "datagov",
                 "station_id": rec.get("station") or f"{lat},{lon}",
+                "sensor_id": "",
                 "name": rec.get("station"),
                 "country": "IN",
                 "provider": "CPCB via data.gov.in",

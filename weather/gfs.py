@@ -83,18 +83,19 @@ def load_step(init: datetime, fxx: int):
     return ds.expand_dims(valid_time=[ds["valid_time"].values]).load()
 
 
-def ingest(conn, step_hours: int = 3) -> tuple[str, int, str]:
+def ingest(conn, step_hours: int = 1) -> tuple[str, int, str]:
     import xarray as xr
 
     init = latest_complete_cycle()
     if init is None:
         raise RuntimeError("no complete GFS cycle found in the last 36 h")
-    if conn.execute("SELECT 1 FROM gfs_cycle WHERE init_time = %s", (init,)).fetchone():
-        return "ok", 0, f"cycle {init:%Y-%m-%d %HZ} already stored"
+    have = conn.execute("SELECT step_hours FROM gfs_cycle WHERE init_time = %s", (init,)).fetchone()
+    if have and have[0] <= step_hours:  # a coarser stored cycle is replaced by a finer one
+        return "ok", 0, f"cycle {init:%Y-%m-%d %HZ} already stored ({have[0]}-hourly)"
     pub, basis = published_at(init)
     hours = list(range(0, MAX_FXX + 1, step_hours))
     # Download the byte ranges in parallel; decode one at a time (eccodes is not thread-safe).
-    with ThreadPoolExecutor(4) as pool:
+    with ThreadPoolExecutor(8) as pool:
         list(pool.map(lambda f: _herbie(init, f).download(SEARCH), hours))
     ds = xr.concat([load_step(init, f) for f in hours], dim="valid_time")
     ds.attrs = {
@@ -117,6 +118,8 @@ def ingest(conn, step_hours: int = 3) -> tuple[str, int, str]:
         INSERT INTO gfs_cycle (init_time, observed_from, observed_to, published_at,
             published_basis, step_hours, n_times, variables, path, bbox)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, ST_MakeEnvelope(%s, %s, %s, %s, 4326))
+        ON CONFLICT (init_time) DO UPDATE SET step_hours = EXCLUDED.step_hours,
+            n_times = EXCLUDED.n_times, ingested_at = now()
         """,
         (init, times[0], times[-1], pub, basis, step_hours, len(times), variables,
          str(path.relative_to(config.ROOT)), lon0, lat0, lon1, lat1),

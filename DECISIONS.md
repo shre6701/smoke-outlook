@@ -17,7 +17,7 @@ One line each: what — why — alternative.
 
 ## Stage 1
 - GFS grid stored as one cropped NetCDF per cycle in `data/gfs/`, catalogue row in Postgres — grids are arrays, not rows; about 2 MB per cycle — alternative: PostGIS raster or one row per grid cell.
-- GFS 0–72 h every 3 h, domain + 1° pad, raw GRIB deleted after cropping — about 240 MB download and 90 s per cycle, small disk — alternative: hourly steps (3× the download).
+- GFS 0–72 h hourly, domain + 1° pad, raw GRIB deleted after cropping — smoother particle motion; about 700 MB download and 2.5 min per cycle, 6 MB kept — alternative: 3-hourly (`--gfs-step 3`, a third of the download).
 - "Latest cycle" = newest init whose f072 file exists on AWS — never a half-uploaded run — alternative: take the newest folder.
 - `published_at` = source publish time when given (GFS: S3 Last-Modified), else time first fetched (`published_basis = 'first_seen'`), never updated — honest point-in-time bound — alternative: assume publish = observation time (leaks future data).
 - Schema applied from `ingest/schema.sql` on each run (idempotent) — works on an existing DB volume — alternative: Docker init script (runs only on a fresh volume) or dbt (later).
@@ -28,6 +28,10 @@ One line each: what — why — alternative.
 - Punjab EPA (aqi.punjab.gov.pk) not used — HTTP 403 to scripts and no terms readable — alternative: scrape it (not without permission).
 - HTTP errors log host and status only — FIRMS and data.gov.in put the key in the URL — alternative: log full URLs.
 - Status exits 1 when a required source is STALE or EMPTY; limits: GFS 14 h, FIRMS 24 h, stations 6 h, CAMS fetch 24 h — usable by a scheduler later — alternative: print only.
+
+- Readings keyed by OpenAQ sensor id — a station can carry more than one PM2.5 sensor — alternative: one reading per station and hour.
+- `--every MIN` loop in `ingest.run` for hourly runs — builds station history now without v3 tooling — alternative: cron or Airflow (v3).
+- ISRO INSAT AOD not built, listed under Later — outside SPEC; column AOD is not ground PM2.5 and MOSDAC terms are unclear — alternative: add as a validation layer after the terms are read.
 
 ### Terms / licence per source (as understood on 2026-11-14; re-check before any public launch)
 - NOAA GFS on AWS Open Data — US Government open data, no use restrictions; credit NOAA/NCEP.
