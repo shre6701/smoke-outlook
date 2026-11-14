@@ -65,6 +65,15 @@ One line each: what — why — alternative.
 - WAQI not used — its terms forbid archived redistribution and it gives an index only — alternative: use it for display only (still needs notice).
 - Repeating today's fires on days 2–3 not built — it invents future inputs; owner's call under the "no synthetic data" rule — alternative: build it as a labelled what-if.
 
+## Hardening round before merge
+- Past winds = first 6 hours of each older GFS cycle (72 h back) — every past hour uses the newest forecast issued by then: real, point-in-time safe, and small — alternative: reanalysis (not allowed in backtests) or no history.
+- Fires of the last 72 h are simulated, results reported from 24 h before the run — smoke lives for days; yesterday's fires matter today — alternative: last 24 h only (under-supplies today).
+- Backward air older than 96 h is dropped — it has lost its smoke; keeps runtime inside budget — alternative: follow all air to the first fire.
+- Venting rule: convergence removes mass (forward), divergence dilutes (backward weight ≤ 1) — the model has no vertical wind; this keeps both directions consistent and removes heavy-tailed weights — alternative: ingest vertical velocity for 3-D transport.
+- Under-terrain pressure levels take the 10 m wind — GFS fills those levels with extrapolated values — alternative: mask mountain cells.
+- "Measured vs simulated" is shown as context only, never as skill — measured PM2.5 includes all sources; skill needs Stage 3 — alternative: hide it.
+- Merged to main by pull request after the clean-clone test — one reviewed history; earlier stage branches are contained in it — alternative: merge each stage branch separately.
+
 ### Terms / licence per source (as understood on 2026-11-14; re-check before any public launch)
 - NOAA GFS on AWS Open Data — US Government open data, no use restrictions; credit NOAA/NCEP.
 - NASA FIRMS — free and open (NASA data policy); MAP_KEY limit 5,000 transactions per 10 min; cite NASA FIRMS / LANCE; NRT data is not for life-safety decisions.

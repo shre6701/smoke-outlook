@@ -113,6 +113,31 @@ Target machine: Windows + WSL2, 16 GB RAM, no GPU, 20-50 GB free disk.
 - Burn fraction for method A is assumed to be 100% (not read from the FINN paper). The 1-hour burn (method B) and horizontal mixing remain assumptions.
 - Not built (needs your decision, touches the "no synthetic data" rule): repeating today's fires on forecast days 2–3.
 
+### Hardening round before merge (2026-11-14, branch `stage-2d-history-hardening`)
+
+**Added**
+- **Three days of fires with real past winds.** Ingest keeps the first hours of every GFS cycle of the last 72 h (11 small files, about 1 GB download once, then one per new cycle) and 4 days of FIRMS. The run follows fires of the last 72 h and reports from 24 h before the run to 72 h ahead. Today: 2,277 detections → 1,733 events → 679 clusters, about 2,000 t PM2.5 (range 106–3,733 t).
+- **Venting rule.** Where wind piles air up, the surplus (with its smoke) leaves through the top of the boundary layer; where wind spreads, clean air dilutes. This removed a false 9.8 µg/m³ spike at Chandigarh and makes forward and backward runs consistent.
+- Pressure levels under the terrain use the surface wind (no made-up mountain flow).
+- **Measured vs simulated line** in every run (measured = all pollution sources; low-cost sensors labelled).
+- GFS files are written atomically; one missing old cycle no longer fails the ingest.
+- pre-commit hooks installed on this machine (they had never run here; they caught one style issue).
+
+**Tested**
+- 46 automated tests pass, here and in a clean clone with a fresh environment (stand-in for a second machine).
+- New tests: failed weather download leaves no half-written cycle and does not stop other sources; data.gov.in fetcher with paging (against a stand-in server, still never against the real site); past-wind cycles are used but never count as forecast members; piling-up wind; zero-fire day.
+- Real ingest into a brand-new empty database works; the simulation then says clearly that weather is missing.
+- On real data: country shares differ by at most 1 point between random seeds; city totals vary 0–7%; halving the time step changes totals by 0–10%; 7–9 of the top-10 clusters are stable.
+- Forward/backward self-check: Delhi 0.92, Lahore 1.13, Amritsar 1.00, Chandigarh 0.62 (still flagged low confidence; its India share is 19% backward vs 29% forward).
+
+**Still weak**
+- **Simulated fire smoke is 0–3% of measured PM2.5** at the four cities right now (e.g. Delhi 0.1 of 201 µg/m³). Measured values include all sources, so this is not a skill score, but published stubble shares for mid-November are usually far higher. Treat absolute values as too low until Stage 3; shares and rankings are the usable output.
+- Runtime is now about 3.5 min (was 2 min) because of the 3-day history; budget is 10 min.
+- 95% of the smoke has left the weather grid, deposited or vented after 72 h; smoke that would return from outside is lost.
+- GFS files are never pruned (about 80 MB per day).
+- Still assumptions, not cited: 100% burn of fuel in a detected pixel, 1-hour burn (low method), horizontal mixing rate.
+- Not built, awaiting your decision: repeating today's fires on forecast days 2–3.
+
 **Next (Stage 2b)**
 - Live map, using `sim_source_share`, `sim_receptor_outlook`, `sim_cluster` and `data/sim/*.nc`. Show the low-confidence flag.
 - Label everything "simulated – not yet validated"; show shares, not absolute µg/m³, until Stage 3.
