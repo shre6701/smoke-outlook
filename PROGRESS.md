@@ -65,6 +65,26 @@ Target machine: Windows + WSL2, 16 GB RAM, no GPU, 20-50 GB free disk.
 - Backward run ignores deposition. Clusters have no country/region tag yet.
 - Ensemble: 2 cycles only (3 once more cycles are stored).
 
+### Test pass after Stage 2 (2026-11-14)
+
+**Checked**
+- 35 automated tests pass (`uv run pytest`, about 35 s). The 11 database tests run on a throwaway database that is created and dropped each time; real data is never touched.
+- Covered: schema applied twice; upgrade of an older table; FIRMS and OpenAQ ingest idempotent, duplicates and dead sensors dropped, lon/lat order; an error page is a failure, not "no fires"; one failing source does not stop the rest and never prints a key; status STALE/EMPTY flags and exit code; a full simulation run in both UTC and India time zones, incl. point-in-time (fires and forecast cycles published after the run start are ignored).
+- Forward and backward runs agree within 15% for a steady source (reciprocity). Same seed gives identical output.
+- On the real data: random noise 3–8% per city at 100,000 particles; 400,000 particles change results by under 4%; halving the time step changes them by up to 11%. 25,000 particles is too few (up to 32% off).
+- Real inputs are physically sensible: Delhi boundary layer about 100 m at night and 2,100 m mid-afternoon; winds up to 16 m/s; no negative or over-range station values.
+
+**Fixed during the pass**
+- Times read from Postgres were assumed to be UTC; a non-UTC session would have shifted fires by hours.
+- Low end of the range ignored a member with zero smoke; hours a member does not cover are no longer counted as zero either (new table `sim_receptor_hourly`).
+- `sim.run` split into a testable `run()`.
+
+**Still weak**
+- The top-10 cluster ranking per city is only partly stable between random seeds (6–8 of 10 shared). Rank small contributors with care, or use more particles (400,000 takes about 2.5 min per member).
+- 161 fire pairs are the same fire seen by both satellites within 90 minutes; each counts as its own hour of burning.
+- Stations median 141 µg/m³ and CAMS 62–77, against simulated fire smoke of about 0.1: the emission scale problem above, confirmed.
+- Not tested: the data.gov.in fetcher against the real site; GFS download failure half-way; behaviour with zero fires in season; anything on a second machine.
+
 **Next (Stage 2b)**
 - Live map. Needs a decision first: which boundary dataset to use for country/region tags (disputed borders in the domain; must stay neutral).
 - Label everything "simulated – not yet validated"; show shares, not absolute µg/m³, until Stage 3.

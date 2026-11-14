@@ -43,17 +43,24 @@ CREATE TABLE IF NOT EXISTS sim_contribution (
     FOREIGN KEY (run_id, cluster_id) REFERENCES sim_cluster ON DELETE CASCADE
 );
 
+-- Hourly total per receptor and member, zeros included, only for hours the member covers.
+CREATE TABLE IF NOT EXISTS sim_receptor_hourly (
+    run_id    bigint NOT NULL REFERENCES sim_run ON DELETE CASCADE,
+    member    text NOT NULL,
+    receptor  text NOT NULL,
+    valid_at  timestamptz NOT NULL,
+    pm25_ugm3 real NOT NULL,
+    PRIMARY KEY (run_id, member, receptor, valid_at)
+);
+
 -- Hourly fire-smoke PM2.5 per receptor with its range:
 -- low = lowest member x low emission factor, high = highest member x high emission factor.
-CREATE OR REPLACE VIEW sim_receptor_outlook AS
-WITH per_member AS (
-    SELECT run_id, member, receptor, valid_at, sum(pm25_ugm3) AS pm25
-    FROM sim_contribution GROUP BY 1, 2, 3, 4
-)
-SELECT m.run_id, m.receptor, m.valid_at,
-       max(m.pm25) FILTER (WHERE m.member = r.members[1]) AS pm25_ugm3,
-       min(m.pm25) * r.ef_low / r.ef_central AS pm25_low,
-       max(m.pm25) * r.ef_high / r.ef_central AS pm25_high,
+DROP VIEW IF EXISTS sim_receptor_outlook;
+CREATE VIEW sim_receptor_outlook AS
+SELECT h.run_id, h.receptor, h.valid_at,
+       max(h.pm25_ugm3) FILTER (WHERE h.member = r.members[1]) AS pm25_ugm3,
+       min(h.pm25_ugm3) * r.ef_low / r.ef_central AS pm25_low,
+       max(h.pm25_ugm3) * r.ef_high / r.ef_central AS pm25_high,
        count(*) AS n_members, r.label
-FROM per_member m JOIN sim_run r USING (run_id)
-GROUP BY m.run_id, m.receptor, m.valid_at, r.members, r.ef_low, r.ef_high, r.ef_central, r.label;
+FROM sim_receptor_hourly h JOIN sim_run r USING (run_id)
+GROUP BY h.run_id, h.receptor, h.valid_at, r.members, r.ef_low, r.ef_high, r.ef_central, r.label;

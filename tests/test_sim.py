@@ -173,3 +173,32 @@ def test_met_uses_newest_cycle_and_older_one_only_before_it(tmp_path):
     assert m.wind(-3 * 3600.0, *pos)[0][0] == pytest.approx(1.0)  # before the new cycle: old one
     assert m.wind(3 * 3600.0, *pos)[0][0] == pytest.approx(9.0)  # after: new one, not the old
     assert list(m.lats) == [30.0, 31.0]
+
+
+def test_forward_and_backward_runs_agree_for_a_steady_source():
+    """Reciprocity: a steady source seen from the receptor must give the same concentration
+    whether we follow the smoke forward or the air backward."""
+    m = met(u=5.0, hpbl=1000.0, hours=48)
+    rng = np.random.default_rng(3)
+    n, q_kg_s, span = 40_000, 1.0, 48 * 3600.0
+    p = make_particles(
+        75.0 + rng.random(n) * 0.1, 30.0 + rng.random(n) * 0.1, np.full(n, q_kg_s * span / n),
+        rng.random(n) * span, np.zeros(n, dtype=int),
+    )  # fmt: skip
+    rec = Receptor("x", 30.05, 76.05)
+    prm = Params(v_dep=0)
+    times, _, contrib, _ = run_forward(m, p, GRID, [rec], 1, span, prm=prm)
+    late = times >= 36 * 3600
+    forward = contrib[late, 0, 0].mean()
+    foot = run_backward(m, [rec], GRID, times[late], 0.0, n_per_arrival=3000, prm=prm)
+    iy, ix = int((30.05 - 26) / 0.1), int((75.05 - 70) / 0.1)
+    backward = foot[0, iy, ix] * q_kg_s * 1e9
+    assert forward > 0 and backward == pytest.approx(forward, rel=0.15)
+
+
+def test_same_seed_gives_identical_results():
+    def once():
+        m, p = met(u=3.0, v=1.0, hours=12), particles(n=3000)
+        return run_forward(m, p, GRID, [Receptor("x", 30.3, 76.0)], 1, 12 * 3600.0)[1]
+
+    assert np.array_equal(once(), once())

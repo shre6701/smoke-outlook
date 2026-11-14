@@ -1,7 +1,7 @@
 """Fire detections -> clusters -> PM2.5 emissions -> particles."""
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
 import numpy as np
 
@@ -38,7 +38,7 @@ class Fires:
 def load(conn, start: datetime, end: datetime) -> Fires:
     rows = conn.execute(SQL, {"start": start, "end": end}).fetchall()
     cols = list(zip(*rows, strict=True)) if rows else [[], [], [], [], []]
-    naive = [t.replace(tzinfo=None) for t in cols[3]]
+    naive = [t.astimezone(UTC).replace(tzinfo=None) for t in cols[3]]  # DB session may not be UTC
     return Fires(
         cluster=np.array(cols[0], dtype=np.intp), lon=np.array(cols[1], dtype=float),
         lat=np.array(cols[2], dtype=float), observed=np.array(naive, dtype="datetime64[s]"),

@@ -47,6 +47,10 @@ One line each: what — why — alternative.
 - `ingest.run` keeps the previous GFS cycle too (`--gfs-back 1`) — needed for the ensemble and pre-cycle winds; +700 MB download once per cycle — alternative: single cycle, no forecast uncertainty.
 - Country/region tagging of clusters left to Stage 2b — boundary choice is sensitive and needs the owner's decision — alternative: pick a boundary file now.
 
+- Database tests use a throwaway database per test (`tests/conftest.py`) and skip when Postgres is down — real tables are never touched — alternative: transactions on the real database.
+- Test weather and fires are made-up arrays, used only inside tests — exact answers are known, so physics can be checked — alternative: recorded real files (large, answers unknown).
+- Particle count stays at 100,000 — noise 3–8%, 78 s; 400,000 gains under 4% for 4× the time — alternative: 400,000 (still inside the budget).
+
 ### Terms / licence per source (as understood on 2026-11-14; re-check before any public launch)
 - NOAA GFS on AWS Open Data — US Government open data, no use restrictions; credit NOAA/NCEP.
 - NASA FIRMS — free and open (NASA data policy); MAP_KEY limit 5,000 transactions per 10 min; cite NASA FIRMS / LANCE; NRT data is not for life-safety decisions.
