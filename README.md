@@ -20,7 +20,15 @@ uv run python -m ingest.run      # GFS, FIRMS, stations, CAMS -> Postgres (about
 uv run python -m ingest.status   # rows, newest timestamp, STALE flags per source
 ```
 
-Add `--every 60` to repeat hourly. Sources without a key (for example `DATAGOV_API_KEY`) are skipped, not failed.
+Then the simulation (Stage 2, about 75 s):
+
+```bash
+uv run python -m sim.run         # 72 h smoke forecast: grid + cluster-to-city contribution table
+```
+
+Output is simulated and not yet validated; absolute values are known to be too low (see `PROGRESS.md`).
+
+For ingest, add `--every 60` to repeat hourly. Sources without a key (for example `DATAGOV_API_KEY`) are skipped, not failed.
 
 Optional services: `docker compose --profile kafka up -d`, `docker compose --profile airflow up -d`.
 On Windows, keep the repo inside the WSL2 filesystem (not `/mnt/c`).

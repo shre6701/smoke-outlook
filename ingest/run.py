@@ -27,8 +27,9 @@ def main() -> int:
     ap.add_argument("--only", nargs="+", choices=list(SOURCES), default=list(SOURCES))
     ap.add_argument("--every", type=int, metavar="MIN", help="repeat every MIN minutes")
     ap.add_argument("--gfs-step", type=int, default=1, choices=[1, 3], help="GFS step in hours")
+    ap.add_argument("--gfs-back", type=int, default=1, help="also keep this many earlier cycles")
     args = ap.parse_args()
-    sources = {**SOURCES, "gfs": partial(gfs.ingest, step_hours=args.gfs_step)}
+    sources = {**SOURCES, "gfs": partial(gfs.ingest, step_hours=args.gfs_step, back=args.gfs_back)}
     while True:
         failed = run_once(args.only, sources)
         if not args.every:

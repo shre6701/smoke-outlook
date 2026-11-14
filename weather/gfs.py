@@ -83,15 +83,25 @@ def load_step(init: datetime, fxx: int):
     return ds.expand_dims(valid_time=[ds["valid_time"].values]).load()
 
 
-def ingest(conn, step_hours: int = 1) -> tuple[str, int, str]:
+def ingest(conn, step_hours: int = 1, back: int = 0) -> tuple[str, int, str]:
+    """Store the latest complete cycle, and the `back` cycles before it if missing."""
+    latest = latest_complete_cycle()
+    if latest is None:
+        raise RuntimeError("no complete GFS cycle found in the last 36 h")
+    total, notes = 0, []
+    for i in range(back, -1, -1):
+        rows, note = ingest_cycle(conn, latest - timedelta(hours=6 * i), step_hours)
+        total += rows
+        notes.append(note)
+    return "ok", total, "; ".join(notes)
+
+
+def ingest_cycle(conn, init: datetime, step_hours: int) -> tuple[int, str]:
     import xarray as xr
 
-    init = latest_complete_cycle()
-    if init is None:
-        raise RuntimeError("no complete GFS cycle found in the last 36 h")
     have = conn.execute("SELECT step_hours FROM gfs_cycle WHERE init_time = %s", (init,)).fetchone()
     if have and have[0] <= step_hours:  # a coarser stored cycle is replaced by a finer one
-        return "ok", 0, f"cycle {init:%Y-%m-%d %HZ} already stored ({have[0]}-hourly)"
+        return 0, f"{init:%Y-%m-%d %HZ} already stored"
     pub, basis = published_at(init)
     hours = list(range(0, MAX_FXX + 1, step_hours))
     # Download the byte ranges in parallel; decode one at a time (eccodes is not thread-safe).
@@ -128,4 +138,4 @@ def ingest(conn, step_hours: int = 1) -> tuple[str, int, str]:
     for f in RAW_DIR.rglob("*"):  # raw GRIB subsets are not needed after cropping
         if f.is_file():
             f.unlink()
-    return "ok", len(times), f"cycle {init:%Y-%m-%d %HZ}, {len(times)} times, {variables}"
+    return len(times), f"{init:%Y-%m-%d %HZ} stored ({len(times)} times)"

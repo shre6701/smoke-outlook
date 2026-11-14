@@ -41,11 +41,38 @@ Target machine: Windows + WSL2, 16 GB RAM, no GPU, 20-50 GB free disk.
 - No real scheduler: `--every 60` is a plain loop in a terminal (Airflow is v3). No dbt tests yet.
 - uv was missing on the laptop; installed with `pip install --user uv` (needs `~/.local/bin` on PATH). Docker Desktop must be started first.
 
-**Next (Stage 2)**
-- Lagrangian model on `data/gfs/*.nc` + `fire_detection`; physics unit tests first; 10-minute budget.
+**Next**
 - When data.gov.in is back: add `DATAGOV_API_KEY`, run `uv run python -m ingest.run --only datagov`, check the unit.
 
+## Stage 2 — Simulation engine (done, 2026-11-14)
+
+**Works** (live run on the laptop, real fires and real forecast winds)
+- One command: `uv run python -m sim.run`. First run: 659 detections → 292 clusters, 100,000 particles, 2 forecast-cycle members, **73 s** (budget 10 min). Runtime is stored in `sim_run.runtime_s`.
+- Forward 72 h from the fire clusters of the last 24 h: hourly gridded fire-smoke PM2.5 (0.1°, 80×100) in `data/sim/*.nc`.
+- Contribution table: `sim_contribution` (cluster × receptor × hour × member); `sim_cluster` (centre, FRP, emission); view `sim_receptor_outlook` with low/high range.
+- Backward run from the 4 receptors: footprint per receptor (where its air comes from), in the same NetCDF.
+- Uncertainty: low/high emission factor × neighbouring forecast cycles (`ingest.run` now also keeps the previous cycle).
+- Physics tests first, 12 of them: zero wind, uniform wind, boundary-layer cap, night residual layer, deposition decay, mass/volume, downwind-only contribution, backward footprint upwind, weather stitching.
+- Point-in-time: a run uses only fires and GFS cycles with `published_at` before its start.
+
+**Thin**
+- **Absolute values are far too low**: peak fire smoke at the receptors is about 0.1 µg/m³, against tens to hundreds observed in this season. Cause is emissions, not transport: 33 t PM2.5/day from satellite FRP with "1 detection = 1 hour of burning". Small, short crop fires are mostly missed between satellite passes. **Shares and rankings are usable; absolute µg/m³ are not** until Stage 3 fits a scale factor against observations.
+- Only fires already seen are released (no "same fires again tomorrow"), so days 2–3 are under-supplied.
+- Wind level heights use the standard atmosphere as height above ground: fine on the plains, wrong in the hills. No terrain.
+- No wet deposition (no rain field ingested), no chemistry (secondary particles ignored).
+- Horizontal mixing (1000 m²/s) and the 1-hour burn are assumptions, not cited values. The dry-deposition and Andreae (2019) numbers should be checked against the sources before publishing.
+- 65% of particles leave the weather grid within 72 h (domain + 1° is small); returning smoke is lost.
+- Backward run ignores deposition. Clusters have no country/region tag yet.
+- Ensemble: 2 cycles only (3 once more cycles are stored).
+
+**Next (Stage 2b)**
+- Live map. Needs a decision first: which boundary dataset to use for country/region tags (disputed borders in the domain; must stay neutral).
+- Label everything "simulated – not yet validated"; show shares, not absolute µg/m³, until Stage 3.
+
 ## Later
+- Ingest GFS geopotential height and terrain so wind levels sit at true height above ground.
+- Ingest GFS rain rate for wet deposition.
+- Persistence emissions (repeat today's fires on forecast days 2–3), clearly labelled.
 - ISRO INSAT-3D/3DR/3DS aerosol optical depth (MOSDAC, 30 min, both countries) as an independent check on where the simulated plume is. Column haze, not ground PM2.5, so not a station substitute. Checked 2026-11-14: free with registration; general accounts may get data 3 days late (live needs a privileged account or standing order); redistribution/display terms not stated on the pages read (read `mosdac-data-guidelines` PDF first). NavIC is navigation only: no air-quality data.
 - Pakistan reference data: ask Punjab EPA for permission or a feed; US Embassy Lahore/Islamabad monitors show no data on OpenAQ after March 2025.
 - Bias-correct Lahore low-cost sensors against the embassy history (Stage 3 topic).

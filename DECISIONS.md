@@ -33,6 +33,20 @@ One line each: what — why — alternative.
 - `--every MIN` loop in `ingest.run` for hourly runs — builds station history now without v3 tooling — alternative: cron or Airflow (v3).
 - ISRO INSAT AOD not built, listed under Later — outside SPEC; column AOD is not ground PM2.5 and MOSDAC terms are unclear — alternative: add as a validation layer after the terms are read.
 
+## Stage 2
+- Pure NumPy particle model, 10-minute steps, bilinear/linear interpolation — 100k particles × 2 members in 73 s on the laptop — alternative: numba or a compiled model (HYSPLIT/FLEXPART; heavier, licence terms).
+- Boundary layer: particles inside it are re-mixed over its full depth every step; particles above stay aloft until it grows back — simple, testable well-mixed assumption with a night residual layer — alternative: turbulent velocity scheme.
+- Ground concentration = in-layer mass / (cell area × local boundary-layer height) — far less noisy than counting particles in a thin surface slab — alternative: fixed 0–100 m layer.
+- Emissions: FRP × 1 h × 0.368 kg/MJ (Wooster 2005) × EF 6.26–8.0 g/kg (Akagi 2011, Andreae 2019) — cited, transparent, no tuning — alternative: scale to match observations now (not before Stage 3 validation).
+- No hand-tuned scale factor although values are about 100× too low — a fitted factor belongs to validation, with held-out data — alternative: borrow a factor from the literature.
+- Clusters by PostGIS `ST_ClusterDBSCAN` (0.05°, min 1 point) — one SQL line, no extra library — alternative: grid cells or scikit-learn.
+- Receptor value = mean over a ±0.25° box — city-scale average, stable with 100k particles — alternative: single grid cell.
+- Hours before the newest cycle starts use the previous stored cycle (else the first forecast hour) — fires seen before the cycle still get real winds, point-in-time safe — alternative: start all smoke at cycle start.
+- Ensemble members = previous cycles (≤ 12 h older) with the same fires; range = min/max member × low/high emission factor — SPEC §4 — alternative: perturbed winds.
+- Gridded output in `data/sim/*.nc`, tables for run, clusters and contributions in Postgres — grids are arrays; tables are queried by the map — alternative: all in Postgres.
+- `ingest.run` keeps the previous GFS cycle too (`--gfs-back 1`) — needed for the ensemble and pre-cycle winds; +700 MB download once per cycle — alternative: single cycle, no forecast uncertainty.
+- Country/region tagging of clusters left to Stage 2b — boundary choice is sensitive and needs the owner's decision — alternative: pick a boundary file now.
+
 ### Terms / licence per source (as understood on 2026-11-14; re-check before any public launch)
 - NOAA GFS on AWS Open Data — US Government open data, no use restrictions; credit NOAA/NCEP.
 - NASA FIRMS — free and open (NASA data policy); MAP_KEY limit 5,000 transactions per 10 min; cite NASA FIRMS / LANCE; NRT data is not for life-safety decisions.
