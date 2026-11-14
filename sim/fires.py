@@ -82,6 +82,42 @@ def load(conn, start: datetime, end: datetime) -> Fires:
     )  # fmt: skip
 
 
+def assume_future(fires: Fires, t0: np.datetime64, now_s: float, t_end_s: float,
+                  lookback_h: float) -> Fires:  # fmt: skip
+    """What-if fires for the forecast days: every fire of the last `lookback_h` hours is
+    assumed to burn again at the same place and time of day on each coming day, at
+    24 / lookback_h of its size, so each future day gets the mean of the last days.
+    (Chosen by backtest, see sim/fire_forecast.py.) Cluster index is offset by n_clusters,
+    so a what-if twin never mixes with its observed cluster."""
+    if not len(fires.frp):
+        return fires
+    start = (fires.observed - t0).astype(float)
+    weight = 24.0 / lookback_h
+    index, when = [], []
+    n_days = int(np.ceil((t_end_s - start.min()) / 86400.0)) if len(start) else 0
+    for day in range(1, n_days + 1):
+        t = start + day * 86400.0
+        keep = np.flatnonzero((t > now_s) & (t <= t_end_s))
+        index.append(keep)
+        when.append(t[keep])
+    index = np.concatenate(index) if index else np.array([], dtype=np.intp)
+    when = np.concatenate(when) if when else np.array([])
+    return Fires(
+        cluster=fires.cluster[index] + fires.n_clusters, lon=fires.lon[index],
+        lat=fires.lat[index], observed=t0 + when.astype("timedelta64[s]"),
+        frp=fires.frp[index] * weight, pixels=fires.pixels[index] * weight,
+    )  # fmt: skip
+
+
+def combine(a: Fires, b: Fires) -> Fires:
+    return Fires(
+        cluster=np.concatenate([a.cluster, b.cluster]), lon=np.concatenate([a.lon, b.lon]),
+        lat=np.concatenate([a.lat, b.lat]), observed=np.concatenate([a.observed, b.observed]),
+        frp=np.concatenate([a.frp, b.frp]), pixels=np.concatenate([a.pixels, b.pixels]),
+        n_detections=a.n_detections,
+    )  # fmt: skip
+
+
 def particles_for(fires: Fires, t0: np.datetime64, n_total: int, n_min: int = 10, seed: int = 0):
     """Particle arrays (lon, lat, mass_kg, release_s, cluster, mass2_kg): each event gets
     particles in proportion to its method-A emission (at least n_min), released evenly over

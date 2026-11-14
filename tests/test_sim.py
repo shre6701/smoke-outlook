@@ -305,3 +305,51 @@ def test_piling_up_wind_vents_smoke_instead_of_concentrating_it():
     )  # fmt: skip
     _, back = run_backward(m, rec, GRID, times, 0.0, 1500, prm, sources=src, n_groups=1)
     assert fwd.sum() > 0 and back.sum() == pytest.approx(fwd.sum(), rel=0.15)
+
+
+def test_assumed_future_fires_are_future_only_and_average_the_last_days():
+    from sim.fires import Fires, assume_future, combine
+
+    t0 = np.datetime64("2026-11-14T12:00:00", "s")
+    hours = np.array([-66.0, -40.0, -20.0, -3.0])  # fires seen over the last 3 days
+    f = Fires(
+        cluster=np.array([0, 0, 1, 2]), lon=np.full(4, 75.0), lat=np.full(4, 30.0),
+        observed=t0 + (hours * 3600).astype("timedelta64[s]"), frp=np.full(4, 9.0),
+        pixels=np.array([3.0, 3.0, 6.0, 3.0]),
+    )  # fmt: skip
+    now_s, t_end = 2 * 3600.0, 72 * 3600.0
+    a = assume_future(f, t0, now_s, t_end, 72.0)
+    t = (a.observed - t0).astype(float)
+    assert t.min() > now_s and t.max() <= t_end
+    assert set(a.cluster) == {3, 4, 5}  # twins of clusters 0, 1, 2, never mixed with them
+    # Same place and time of day as the fire it repeats.
+    assert np.allclose(np.mod(t / 3600.0, 24.0)[a.cluster == 5], np.mod(-3.0, 24.0))
+    # A full future day gets one third of the 3-day total (15 pixels -> 5 per day).
+    day2 = (t > 26 * 3600) & (t <= 50 * 3600)
+    assert a.pixels[day2].sum() == pytest.approx(f.pixels.sum() / 3)
+    both = combine(f, a)
+    assert len(both.frp) == len(f.frp) + len(a.frp) and both.n_clusters == 6
+    empty = Fires(*(np.array([]) for _ in range(6)))
+    none = assume_future(empty, t0, now_s, t_end, 72.0)
+    assert len(none.frp) == 0
+
+
+def test_fire_guess_backtest_scores():
+    from sim.fire_forecast import METHODS, backtest, best_method, grid_shape
+
+    start = np.datetime64("2026-10-01")
+    steady = np.zeros(grid_shape())
+    steady[10, 10], steady[20, 30] = 5.0, 2.0
+    days = {(start + i).astype(object): steady.copy() for i in range(14)}
+    rows = {(r["method"], r["lead"]): r for r in backtest(days)}
+    assert rows[("no future fires", 1)]["cell_error"] == pytest.approx(1.0)
+    assert rows[("repeat last day", 2)]["cell_error"] == pytest.approx(0.0)
+    assert rows[("mean of last 3 days", 3)]["bias"] == pytest.approx(1.0)
+    # Fires that jump between two cells 100 km apart: a mean beats repeating the last day.
+    a, b = np.zeros(grid_shape()), np.zeros(grid_shape())
+    a[5, 5], b[25, 25] = 4.0, 4.0
+    days = {(start + i).astype(object): (a if i % 2 else b).copy() for i in range(20)}
+    rows = backtest(days)
+    by = {(r["method"], r["lead"]): r["area_error"] for r in rows}
+    assert by[("mean of last 2 days", 1)] < by[("repeat last day", 1)]
+    assert best_method(rows) in METHODS

@@ -28,6 +28,8 @@ Then the simulation (Stage 2, about 3.5 min):
 uv run python -m sim.run         # 72 h smoke forecast: grid + cluster-to-city contribution table
 ```
 
+`uv run python -m sim.fire_forecast` prints the backtest behind the what-if for future fires.
+
 Output is simulated and not yet validated; absolute values are known to be too low (see `PROGRESS.md`).
 
 For ingest, add `--every 60` to repeat hourly. Sources without a key (for example `DATAGOV_API_KEY`) are skipped, not failed.

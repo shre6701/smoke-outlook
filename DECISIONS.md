@@ -74,6 +74,14 @@ One line each: what — why — alternative.
 - "Measured vs simulated" is shown as context only, never as skill — measured PM2.5 includes all sources; skill needs Stage 3 — alternative: hide it.
 - Merged to main by pull request after the clean-clone test — one reviewed history; earlier stage branches are contained in it — alternative: merge each stage branch separately.
 
+## Fires on forecast days
+- Future fires = mean of the last 3 days, same place and time of day — best on totals in the season backtest (23–32% error) and tied best at 100 km; matches the 72 h fire window — alternative: repeat the last day (35% error), 7-day mean (biased low while the season grows), day-of-year climatology (needs the archive).
+- The what-if is stored and shown separately from observed-fire results, with its own label — it is an assumption, not data ("no synthetic data" rule) — alternative: fold it into the main forecast.
+- Targeting and the cross-border ledger use observed fires only — the backtest shows place is not predictable — alternative: include assumed fires.
+- Method is chosen on 1° block error, not 25 km cells — smoke travels 100+ km, and no method has skill at 25 km — alternative: cell error (would favour over-smoothed 7-day means).
+- Season backfill rows are marked `published_basis = 'backfill'` with today's fetch time — they can never pass as data that was available earlier — alternative: pretend they were live.
+- Forward particle cap raised to 150,000 — observed and assumed fires share it — alternative: keep 100,000 (noisier map).
+
 ### Terms / licence per source (as understood on 2026-11-14; re-check before any public launch)
 - NOAA GFS on AWS Open Data — US Government open data, no use restrictions; credit NOAA/NCEP.
 - NASA FIRMS — free and open (NASA data policy); MAP_KEY limit 5,000 transactions per 10 min; cite NASA FIRMS / LANCE; NRT data is not for life-safety decisions.

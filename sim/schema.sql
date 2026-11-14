@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS sim_contribution (
     FOREIGN KEY (run_id, cluster_id) REFERENCES sim_cluster ON DELETE CASCADE
 );
 ALTER TABLE sim_contribution ADD COLUMN IF NOT EXISTS pm25_frp_ugm3 real;
+-- smoke from the what-if repeats of this cluster on coming days (0 before the run time)
+ALTER TABLE sim_contribution ADD COLUMN IF NOT EXISTS pm25_assumed_ugm3 real;
 
 -- Hourly total per receptor and member, zeros included, only for hours the member covers.
 CREATE TABLE IF NOT EXISTS sim_receptor_hourly (
@@ -62,18 +64,23 @@ CREATE TABLE IF NOT EXISTS sim_receptor_hourly (
     PRIMARY KEY (run_id, member, receptor, valid_at)
 );
 ALTER TABLE sim_receptor_hourly ADD COLUMN IF NOT EXISTS pm25_frp_ugm3 real;
+-- observed fires + what-if repeats on coming days (burned-area method)
+ALTER TABLE sim_receptor_hourly ADD COLUMN IF NOT EXISTS pm25_whatif_ugm3 real;
 
 -- Hourly fire-smoke PM2.5 per receptor with its range:
 --   central = method A, central factor, newest forecast cycle
 --   low     = lowest member, method B (FRP), low factor
 --   high    = highest member, method A, high factor
+--   what-if = central + assumed repeats of the last days' fires on coming days (labelled)
 DROP VIEW IF EXISTS sim_receptor_outlook;
 CREATE VIEW sim_receptor_outlook AS
 SELECT h.run_id, h.receptor, h.valid_at,
        max(h.pm25_ugm3) FILTER (WHERE h.member = r.members[1]) AS pm25_ugm3,
        min(COALESCE(h.pm25_frp_ugm3, h.pm25_ugm3)) * r.ef_low / r.ef_central AS pm25_low,
        max(h.pm25_ugm3) * r.ef_high / r.ef_central AS pm25_high,
-       count(*) AS n_members, r.label
+       count(*) AS n_members, r.label,
+       max(COALESCE(h.pm25_whatif_ugm3, h.pm25_ugm3)) FILTER (WHERE h.member = r.members[1])
+           AS pm25_whatif_ugm3
 FROM sim_receptor_hourly h JOIN sim_run r USING (run_id)
 GROUP BY h.run_id, h.receptor, h.valid_at, r.members, r.ef_low, r.ef_high, r.ef_central, r.label;
 
@@ -91,5 +98,5 @@ SELECT k.run_id, k.receptor, (k.valid_at AT TIME ZONE 'UTC')::date AS day_utc,
 FROM sim_contribution k
 JOIN sim_cluster c USING (run_id, cluster_id)
 JOIN sim_run r USING (run_id)
-WHERE k.member = r.members[1] AND k.valid_at >= r.started_at
+WHERE k.member = r.members[1] AND k.valid_at >= r.started_at AND k.pm25_ugm3 > 0
 GROUP BY k.run_id, k.receptor, (k.valid_at AT TIME ZONE 'UTC')::date, c.country, c.region, r.label;

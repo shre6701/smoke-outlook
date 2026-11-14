@@ -138,11 +138,36 @@ Target machine: Windows + WSL2, 16 GB RAM, no GPU, 20-50 GB free disk.
 - Still assumptions, not cited: 100% burn of fuel in a detected pixel, 1-hour burn (low method), horizontal mixing rate.
 - Not built, awaiting your decision: repeating today's fires on forecast days 2–3.
 
+### Fires on forecast days: research, backtest, what-if (2026-11-14)
+
+**Research**
+- US systems (HRRR-Smoke, NOAA air-quality forecast) repeat the latest day's fires.
+- India's DSS (IITM) uses seen fires on day 1 and the long-term average for that calendar day on days 2–5. That needs a multi-year archive, which we will have in Stage 3.
+- NASA Earth Observatory (Dec 2025): most stubble fires are now lit at 4–6 pm local time, after the early-afternoon satellite pass, so VIIRS misses many. This is the most likely reason our absolute smoke is far too low.
+
+**Backtest on this season's real fires** (25 Sep – 13 Nov 2026, 38,000 detections backfilled; `uv run python -m sim.fire_forecast`)
+- Exact place is not predictable: at 25 km cells every method is only 3–12% better than "no future fires".
+- At 100 km blocks, a 2–3 day mean cuts the error by 27–37%.
+- Totals are predictable: the 3-day mean misses the domain total by 23% (1 day ahead) to 32% (3 days), with similar skill for India (28–35%) and Pakistan (29–36%).
+- Repeating only the last day is worse (35% on totals); adding a trend is worse still (44%).
+- **Chosen: mean of the last 3 days**, repeated at the same place and time of day.
+
+**Built**
+- Every run now also gives a labelled what-if: observed fires plus assumed repeats. Stored separately everywhere (`pm25_whatif_ugm3`, `pm25_assumed_ugm3`, NetCDF `pm25_fire_whatif`); observed-only numbers are unchanged. Targeting and the ledger use observed fires only.
+- Today: what-if peaks are 1–9× the observed-only peaks (e.g. Lahore 0.7 → 6.4 µg/m³).
+- 48 tests pass. Runtime about 5 min with 3 forecast members (budget 10).
+
+**Limits**
+- The what-if is good for "how much smoke, roughly", not for "which fire". Backtest is one season, one satellite family, and backfilled data (fetched today, not point-in-time).
+- Weather is not used (rain or a harvest ending will break it).
+
 **Next (Stage 2b)**
 - Live map, using `sim_source_share`, `sim_receptor_outlook`, `sim_cluster` and `data/sim/*.nc`. Show the low-confidence flag.
 - Label everything "simulated – not yet validated"; show shares, not absolute µg/m³, until Stage 3.
 
 ## Later
+- Geostationary fire data (Meteosat over the Indian Ocean, GEO-KOMPSAT-2A) to catch the 4–6 pm fires that polar satellites miss; check access and terms first.
+- Calendar-day fire climatology for days 2–5 (the DSS method) once the 2024–2025 archive is loaded in Stage 3.
 - Ingest GFS geopotential height and terrain so wind levels sit at true height above ground.
 - Ingest GFS rain rate for wet deposition.
 - Persistence emissions (repeat today's fires on forecast days 2–3), clearly labelled.

@@ -298,10 +298,22 @@ def test_sim_run_end_to_end(testdb, tmp_path, session_tz):
     counts = dict(conn.execute("SELECT member, count(*) FROM sim_receptor_hourly GROUP BY 1"))
     assert counts[f"gfs_{init:%Y%m%d_%H}"] - counts[f"gfs_{prev:%Y%m%d_%H}"] == 4 * 6
 
+    # What-if (fires assumed to continue): never below the observed-fires value, equal to it
+    # before the run time, and above it somewhere in the forecast.
+    w = conn.execute(
+        "SELECT count(*) FILTER (WHERE o.pm25_whatif_ugm3 < o.pm25_ugm3 - 1e-6), "
+        "max(abs(o.pm25_whatif_ugm3 - o.pm25_ugm3)) FILTER (WHERE o.valid_at <= r.started_at), "
+        "max(o.pm25_whatif_ugm3 - o.pm25_ugm3) FILTER (WHERE o.valid_at > r.started_at) "
+        "FROM sim_receptor_outlook o JOIN sim_run r USING (run_id)"
+    ).fetchone()
+    assert w[0] == 0 and w[1] < 1e-6 and w[2] > 0 and r["n_assumed"] > 0
+
     import xarray as xr
 
     ds = xr.open_dataset(r["path"])
     assert ds.pm25_fire.shape[1:] == (80, 100) and ds.footprint.shape == (4, 80, 100)
+    assert float((ds.pm25_fire_whatif - ds.pm25_fire).min()) >= -1e-6
+    assert "what-if" in ds.pm25_fire_whatif.attrs["label"]
     assert float(ds.pm25_fire.min()) >= 0 and not bool(ds.pm25_fire.isnull().any())
     assert ds.attrs["label"] == sim_run.LABEL
 
