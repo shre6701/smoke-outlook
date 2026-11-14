@@ -1,0 +1,47 @@
+# Default: Postgres+PostGIS only.
+# Optional: docker compose --profile kafka up -d / docker compose --profile airflow up -d
+name: smoke-outlook
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-smoke}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-smoke}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  kafka:
+    profiles: ["kafka"]
+    image: apache/kafka:3.9.1
+    ports:
+      - "9092:9092"
+    mem_limit: 1g
+
+  airflow:
+    profiles: ["airflow"]
+    image: apache/airflow:3.0.6
+    command: standalone
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-smoke}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+    mem_limit: 3g
+
+volumes:
+  pgdata:

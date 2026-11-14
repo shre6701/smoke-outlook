@@ -1,0 +1,33 @@
+[project]
+name = "smoke-outlook"
+version = "0.0.0"
+description = "Smoke & GRAP Outlook (South Asia)"
+requires-python = ">=3.12"
+dependencies = [
+    "psycopg[binary]>=3.2",
+    "python-dotenv>=1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.8",
+    "pre-commit>=4",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["web", "dbt"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+markers = ["db: needs the Postgres container running"]
