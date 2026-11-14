@@ -10,10 +10,11 @@ import time
 from datetime import UTC, datetime
 from functools import partial
 
-from ingest import cams, db, firms, stations
+from ingest import boundaries, cams, db, firms, stations
 from weather import gfs
 
 SOURCES = {
+    "boundaries": boundaries.ingest,
     "gfs": gfs.ingest,
     "firms": firms.ingest,
     "openaq": stations.ingest_openaq,

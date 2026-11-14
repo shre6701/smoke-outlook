@@ -18,10 +18,11 @@ SEARCH = (
     r":(?:UGRD|VGRD):(?:925|850|700) mb:"
     r"|:(?:UGRD|VGRD):10 m above ground:"
     r"|:HPBL:|:TMP:2 m above ground:"
+    r"|:HGT:(?:925|850|700) mb:|:HGT:surface:"  # true height of the wind levels + terrain
 )
 N_FIELDS = 10
 MAX_FXX = 72
-PAD = 1.0  # degrees kept around the domain so edges can be interpolated
+PAD = 4.0  # degrees kept around the domain so smoke that leaves can come back
 RAW_DIR = config.DATA_DIR / "gfs_raw"
 OUT_DIR = config.DATA_DIR / "gfs"
 
@@ -58,7 +59,7 @@ def published_at(init: datetime) -> tuple[datetime, str]:
         return datetime.now(UTC), "first_seen"
 
 
-VARIABLES = ["hpbl", "t2m", "u", "u10", "v", "v10"]
+VARIABLES = ["gh", "hpbl", "orog", "t2m", "u", "u10", "v", "v10"]
 
 
 def _tidy(ds):
@@ -99,8 +100,11 @@ def ingest(conn, step_hours: int = 1, back: int = 0) -> tuple[str, int, str]:
 def ingest_cycle(conn, init: datetime, step_hours: int) -> tuple[int, str]:
     import xarray as xr
 
-    have = conn.execute("SELECT step_hours FROM gfs_cycle WHERE init_time = %s", (init,)).fetchone()
-    if have and have[0] <= step_hours:  # a coarser stored cycle is replaced by a finer one
+    have = conn.execute(
+        "SELECT step_hours FROM gfs_cycle WHERE init_time = %s AND variables = %s AND path LIKE %s",
+        (init, VARIABLES, f"%pad{PAD:g}%"),
+    ).fetchone()
+    if have and have[0] <= step_hours:  # coarser or older-format cycles are replaced
         return 0, f"{init:%Y-%m-%d %HZ} already stored"
     pub, basis = published_at(init)
     hours = list(range(0, MAX_FXX + 1, step_hours))
@@ -118,7 +122,7 @@ def ingest_cycle(conn, init: datetime, step_hours: int) -> tuple[int, str]:
     if variables != VARIABLES or levels != 3:
         raise RuntimeError(f"GFS subset incomplete: vars={variables} levels={levels}")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    path = OUT_DIR / f"gfs_{init:%Y%m%d_%H}.nc"
+    path = OUT_DIR / f"gfs_{init:%Y%m%d_%H}_pad{PAD:g}.nc"
     ds.to_netcdf(path)
     times = [init + timedelta(hours=h) for h in hours]
     lat0, lat1 = float(ds.latitude.min()), float(ds.latitude.max())
@@ -129,7 +133,8 @@ def ingest_cycle(conn, init: datetime, step_hours: int) -> tuple[int, str]:
             published_basis, step_hours, n_times, variables, path, bbox)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, ST_MakeEnvelope(%s, %s, %s, %s, 4326))
         ON CONFLICT (init_time) DO UPDATE SET step_hours = EXCLUDED.step_hours,
-            n_times = EXCLUDED.n_times, ingested_at = now()
+            n_times = EXCLUDED.n_times, variables = EXCLUDED.variables, bbox = EXCLUDED.bbox,
+            path = EXCLUDED.path, ingested_at = now()
         """,
         (init, times[0], times[-1], pub, basis, step_hours, len(times), variables,
          str(path.relative_to(config.ROOT)), lon0, lat0, lon1, lat1),

@@ -51,6 +51,20 @@ One line each: what — why — alternative.
 - Test weather and fires are made-up arrays, used only inside tests — exact answers are known, so physics can be checked — alternative: recorded real files (large, answers unknown).
 - Particle count stays at 100,000 — noise 3–8%, 78 s; 400,000 gains under 4% for 4× the time — alternative: 400,000 (still inside the budget).
 
+## Improvement round (after Stage 2)
+- Boundaries: Natural Earth 1:10m countries, admin-1 and disputed areas; disputed areas are their own class and win over any country — neutral, same rule on every side; public domain — alternative: one country's official map, or OSM (ODbL).
+- Ledger days are UTC days — India and Pakistan clocks differ by 30 min; neither is favoured — alternative: local day per city.
+- Central emission = burned-area method (FINN v2.5: 0.14 km²/pixel, 902 g/m²), low = fire-power method; both stored per row — two published methods bracket the truth better than one; no fitting to our own observations — alternative: one method with a tuned factor.
+- High emission factor 13.4 g/kg (FINN v2.5 crops), low 6.26 (Akagi 2011), central 7.13 — spans the published range — alternative: Andreae (2019) only.
+- Fire event = touching pixels in one 6-hour pass window, sized by the satellite with more pixels — removes NOAA-20/21 double sightings without merging separate fires — alternative: count every detection.
+- City contributions come from backward runs (500 particles per city-hour), the map field from the forward run — every backward particle counts for its city, so ranking noise drops — alternative: forward only with 4× particles.
+- Backward weights are multiplied by exp(−divergence × time) — needed for forward/backward agreement in real winds (no vertical wind in the model) — alternative: ingest vertical velocity and advect in 3-D.
+- Forward/backward ratio outside 0.67–1.5 marks a city low confidence — a built-in, per-run quality flag — alternative: no flag.
+- Wind levels use GFS geopotential height minus terrain; levels under the terrain sit just above ground — alternative: standard-atmosphere heights.
+- Weather area = domain + 4° — byte-range downloads fetch the whole globe anyway, so this costs only 13 MB per cycle — alternative: + 1°.
+- WAQI not used — its terms forbid archived redistribution and it gives an index only — alternative: use it for display only (still needs notice).
+- Repeating today's fires on days 2–3 not built — it invents future inputs; owner's call under the "no synthetic data" rule — alternative: build it as a labelled what-if.
+
 ### Terms / licence per source (as understood on 2026-11-14; re-check before any public launch)
 - NOAA GFS on AWS Open Data — US Government open data, no use restrictions; credit NOAA/NCEP.
 - NASA FIRMS — free and open (NASA data policy); MAP_KEY limit 5,000 transactions per 10 min; cite NASA FIRMS / LANCE; NRT data is not for life-safety decisions.
@@ -58,3 +72,6 @@ One line each: what — why — alternative.
 - data.gov.in — Government Open Data License – India (attribution required); free key. Not yet used.
 - Open-Meteo air-quality API (CAMS) — data CC BY 4.0, free tier is non-commercial and under about 10,000 calls/day; credit Open-Meteo and "Copernicus Atmosphere Monitoring Service".
 - Punjab EPA — terms not found; not used.
+- Natural Earth — public domain; no restriction, credit optional ("Made with Natural Earth").
+- WAQI / aqicn.org — not used: no redistribution of cached or archived data, attribution and prior notice required.
+- FINN v2.5 — only published method constants are used (Wiedinmyer et al. 2023, CC BY 4.0), not its data.

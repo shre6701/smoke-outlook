@@ -189,7 +189,7 @@ def test_status_flags_stale_and_empty_and_sets_exit_code(testdb, monkeypatch, ca
         return next(ln for ln in lines if ln.startswith(label))
 
     assert "STALE" in line("FIRMS fires")  # newest fire is 30 h old, limit 24 h
-    for label in ("GFS forecast", "India stations (OpenAQ)", "Pakistan stations", "CAMS"):
+    for label in ("GFS forecast", "India reference stations", "Pakistan stations", "CAMS"):
         assert " ok " in line(label)
     conn.execute("UPDATE fire_detection SET observed_at = now() - interval '2 hours'")
     conn.commit()
@@ -259,12 +259,13 @@ def test_sim_run_end_to_end(testdb, tmp_path, session_tz):
     add_fire(conn, 28.61, 76.5, 999.0, now - timedelta(hours=30), now - timedelta(hours=29))
     conn.commit()
 
-    r = sim_run.run(conn, now, n_particles=4000, out_dir=tmp_path / "sim")
+    r = sim_run.run(conn, now, n_particles=4000, out_dir=tmp_path / "sim", n_per_arrival=200)
 
     assert r["init"] == init and r["members"] == [f"gfs_{init:%Y%m%d_%H}", f"gfs_{prev:%Y%m%d_%H}"]
     assert r["n_detections"] == 3 and r["n_clusters"] == 2  # 999 MW fires were excluded
     row = conn.execute("SELECT n_detections, runtime_s, label FROM sim_run").fetchone()
     assert row[0] == 3 and row[1] > 0 and "simulated" in row[2]
+    assert 0.6 < r["check"]["Delhi"] < 1.6  # forward and backward runs agree
 
     # Only the upwind cluster (50 + 30 MW) reaches Delhi; the calm member brings almost nothing
     # (only the random-walk tail), the windy member a lot.
@@ -312,3 +313,106 @@ def test_sim_run_refuses_without_data(testdb, tmp_path):
     sim_run.ensure_schema(conn)
     with pytest.raises(sim_run.NothingToRun):
         sim_run.run(conn, datetime.now(UTC), out_dir=tmp_path)
+
+
+def test_zero_fire_day_gives_a_zero_run_not_an_error(testdb, tmp_path):
+    from sim import run as sim_run
+
+    conn = testdb()
+    sim_run.ensure_schema(conn)
+    now = datetime.now(UTC).replace(microsecond=0)
+    init = (now - timedelta(hours=5)).replace(minute=0, second=0)
+    write_cycle(tmp_path / "new.nc", init, u=5.0)
+    add_cycle(conn, tmp_path / "new.nc", init, init + timedelta(hours=4))
+    conn.commit()
+    r = sim_run.run(conn, now, out_dir=tmp_path / "sim", n_per_arrival=20)
+    assert r["n_events"] == 0 and r["conc_max"] == 0.0 and r["n_rows"] == 0
+    n, total = conn.execute("SELECT count(*), sum(pm25_ugm3) FROM sim_receptor_hourly").fetchone()
+    assert n == 4 * 73 and total == 0.0
+
+
+def test_same_fire_seen_by_two_satellites_is_one_event(testdb):
+    from sim import fires as fires_mod
+    from sim import run as sim_run
+
+    conn = testdb()
+    sim_run.ensure_schema(conn)
+    now = datetime.now(UTC).replace(microsecond=0)
+    # Keep both passes inside one 6-hour window whatever the clock says.
+    base = datetime.fromtimestamp((now.timestamp() // 21600) * 21600, UTC) - timedelta(hours=5)
+
+    def add(source, lat, lon, frp, minutes):
+        conn.execute(
+            "INSERT INTO fire_detection (source, observed_at, published_at, published_basis, "
+            "latitude, longitude, geom, frp_mw) VALUES (%s, %s, %s, 'first_seen', %s, %s, "
+            "ST_SetSRID(ST_MakePoint(%s, %s), 4326), %s)",
+            (source, base + timedelta(minutes=minutes), base + timedelta(hours=1), lat, lon,
+             lon, lat, frp),
+        )  # fmt: skip
+
+    # Fire 1: NOAA-20 sees 2 touching pixels, NOAA-21 sees 1 of them 50 minutes later.
+    add("VIIRS_NOAA20_NRT", 30.000, 75.000, 5.0, 0)
+    add("VIIRS_NOAA20_NRT", 30.003, 75.000, 7.0, 0)
+    add("VIIRS_NOAA21_NRT", 30.001, 75.001, 9.0, 50)
+    # Fire 2: 30 km away, one satellite only.
+    add("VIIRS_NOAA21_NRT", 30.300, 75.000, 4.0, 50)
+    conn.commit()
+    f = fires_mod.load(conn, base - timedelta(hours=1), base + timedelta(hours=5))
+    assert f.n_detections == 4 and len(f.frp) == 2 and f.n_clusters == 2
+    big = int(f.pixels.argmax())
+    assert f.pixels[big] == 2 and f.frp[big] == 12.0  # the 2-pixel view wins; no double count
+    assert f.pixels.sum() == 3
+
+
+def test_disputed_areas_are_their_own_class(testdb):
+    conn = testdb()
+    db.ensure_schema(conn)
+
+    def box(kind, name, code, w, s, e, n):
+        conn.execute(
+            "INSERT INTO boundary (kind, name, code, geom) VALUES (%s, %s, %s, "
+            "ST_Multi(ST_MakeEnvelope(%s, %s, %s, %s, 4326)))",
+            (kind, name, code, w, s, e, n),
+        )
+
+    box("country", "A-land", "AA", 70, 26, 75, 34)
+    box("country", "B-land", "BB", 75, 26, 80, 34)
+    box("region", "West", "AA", 70, 26, 75, 34)
+    box("region", "East", "BB", 75, 26, 80, 34)
+    box("disputed", "Middle", None, 74, 32, 76, 34)  # overlaps both countries
+
+    def place(lon, lat):
+        return conn.execute(
+            "SELECT (place_of(ST_SetSRID(ST_MakePoint(%s, %s), 4326))).*", (lon, lat)
+        ).fetchone()
+
+    assert place(72, 30) == ("AA", "West") and place(78, 30) == ("BB", "East")
+    assert place(74.5, 33) == ("disputed", "Middle")  # administered by A, still "disputed"
+    assert place(75.5, 33) == ("disputed", "Middle")  # administered by B, same wording
+    assert place(60, 10) == ("other", None)
+
+
+def test_daily_source_share_adds_up_and_uses_forecast_hours_only(testdb, tmp_path):
+    from sim import run as sim_run
+
+    conn = testdb()
+    sim_run.ensure_schema(conn)
+    for kind, name, code, w, e in (("country", "A", "AA", 70, 77), ("country", "B", "BB", 77, 80)):
+        conn.execute(
+            "INSERT INTO boundary (kind, name, code, geom) VALUES (%s, %s, %s, "
+            "ST_Multi(ST_MakeEnvelope(%s, 26, %s, 34, 4326)))", (kind, name, code, w, e),
+        )  # fmt: skip
+    now = datetime.now(UTC).replace(microsecond=0)
+    init = (now - timedelta(hours=5)).replace(minute=0, second=0)
+    write_cycle(tmp_path / "new.nc", init, u=5.0)
+    add_cycle(conn, tmp_path / "new.nc", init, init + timedelta(hours=4))
+    add_fire(conn, 28.61, 76.2, 50.0, now - timedelta(hours=2), now - timedelta(hours=1))
+    conn.commit()
+    sim_run.run(conn, now, n_particles=3000, out_dir=tmp_path / "sim", n_per_arrival=150)
+    rows = conn.execute(
+        "SELECT receptor, day_utc, country, share FROM sim_source_share ORDER BY 1, 2"
+    ).fetchall()
+    assert rows and {r[2] for r in rows} == {"AA"}  # the fire is in country A
+    assert all(r[3] == pytest.approx(1.0) for r in rows)
+    assert min(r[1] for r in rows) >= now.date()
+    assert conn.execute("SELECT DISTINCT country FROM sim_cluster").fetchall() == [("AA",)]

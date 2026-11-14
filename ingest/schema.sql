@@ -107,3 +107,33 @@ CREATE TABLE IF NOT EXISTS gfs_cycle (
     path            text NOT NULL,
     bbox            geometry(Polygon, 4326) NOT NULL
 );
+
+-- Natural Earth boundaries (public domain). kind: country | region | disputed.
+CREATE TABLE IF NOT EXISTS boundary (
+    id   serial PRIMARY KEY,
+    kind text NOT NULL CHECK (kind IN ('country', 'region', 'disputed')),
+    name text,
+    code text,   -- ISO 3166 alpha-2 of the country (country and region rows)
+    note text,   -- Natural Earth's note for disputed areas
+    geom geometry(MultiPolygon, 4326) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS boundary_geom_idx ON boundary USING gist (geom);
+
+-- Where is a point? Disputed areas win over countries, on every side of every border.
+-- Returns country = ISO code, 'disputed', or 'other'; region = state/province or the
+-- disputed area's Natural Earth name.
+CREATE OR REPLACE FUNCTION place_of(pt geometry, OUT country text, OUT region text)
+LANGUAGE sql STABLE AS $$
+    SELECT COALESCE(
+               (SELECT 'disputed' FROM boundary b
+                WHERE b.kind = 'disputed' AND ST_Covers(b.geom, pt) LIMIT 1),
+               (SELECT b.code FROM boundary b
+                WHERE b.kind = 'country' AND b.code ~ '^[A-Z]{2}$' AND ST_Covers(b.geom, pt)
+                LIMIT 1),
+               'other'),
+           COALESCE(
+               (SELECT b.name FROM boundary b
+                WHERE b.kind = 'disputed' AND ST_Covers(b.geom, pt) LIMIT 1),
+               (SELECT b.name FROM boundary b
+                WHERE b.kind = 'region' AND ST_Covers(b.geom, pt) LIMIT 1));
+$$;

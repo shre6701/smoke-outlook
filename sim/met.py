@@ -5,11 +5,11 @@ from pathlib import Path
 
 import numpy as np
 
-from sim.constants import HPBL_MIN_M, LEVEL_HEIGHTS_M
+from sim.constants import HPBL_MIN_M, LEVEL_HEIGHTS_M, M_PER_DEG, MIN_LEVEL_HEIGHTS_M
 
 
 def _frac(axis: np.ndarray, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Lower index and weight of x on a regular or irregular ascending axis (clamped)."""
+    """Lower index and weight of x on an ascending axis (clamped at both ends)."""
     if len(axis) == 1:
         return np.zeros(x.shape, dtype=np.intp), np.zeros(x.shape)
     i = np.clip(np.searchsorted(axis, x, side="right") - 1, 0, len(axis) - 2)
@@ -19,8 +19,11 @@ def _frac(axis: np.ndarray, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 @dataclass
 class Met:
-    """times: seconds since t0 (ascending). lats, lons ascending. heights: m above ground.
-    u, v: [time, level, lat, lon] m/s. hpbl: [time, lat, lon] m."""
+    """times: seconds since t0 (ascending). lats, lons ascending.
+    u, v: [time, level, lat, lon] m/s for the levels 10 m, 925, 850, 700 hPa.
+    hpbl: [time, lat, lon] m.
+    z_agl: optional [time, 3, lat, lon], true height above ground of the three pressure
+    levels; without it the fixed `heights` are used everywhere."""
 
     times: np.ndarray
     lats: np.ndarray
@@ -30,6 +33,26 @@ class Met:
     hpbl: np.ndarray
     heights: np.ndarray = field(default_factory=lambda: np.array(LEVEL_HEIGHTS_M))
     t0: np.datetime64 | None = None  # absolute time of second 0
+    z_agl: np.ndarray | None = None
+
+    def __post_init__(self):
+        self._nk = self.u.shape[1]
+        self._yx = len(self.lats) * len(self.lons)
+        self._u, self._v, self._h = self.u.ravel(), self.v.ravel(), self.hpbl.ravel()
+        self._z = None if self.z_agl is None else self.z_agl.ravel()
+        self._div = None  # horizontal divergence, built on first use (backward runs only)
+
+    def _divergence(self) -> np.ndarray:
+        """Horizontal wind divergence (1/s) on the grid: how fast air spreads out sideways."""
+        if self._div is None:
+            cos = np.cos(np.radians(self.lats))[None, None, :, None]
+            if len(self.lons) > 1 and len(self.lats) > 1:
+                dudx = np.gradient(self.u.astype(float), self.lons, axis=3)
+                dvdy = np.gradient(self.v.astype(float) * cos, self.lats, axis=2)
+                self._div = ((dudx + dvdy) / (M_PER_DEG * cos)).astype(np.float32).ravel()
+            else:
+                self._div = np.zeros(self.u.size, dtype=np.float32)
+        return self._div
 
     def inside(self, lon, lat):
         return (
@@ -37,38 +60,58 @@ class Met:
             & (lat >= self.lats[0]) & (lat <= self.lats[-1])
         )  # fmt: skip
 
-    def _hweights(self, t, lat, lon):
-        ti, tw = _frac(self.times, np.full(lon.shape, t, dtype=float))
+    def _corners(self, t: float, lon, lat):
+        """The 8 (time, lat, lon) corners around each point: (time index, y*X+x, weight)."""
+        nx = len(self.lons)
+        ti, tw = _frac(self.times, np.array([float(t)]))
+        t0, t1 = int(ti[0]), min(int(ti[0]) + 1, len(self.times) - 1)
         yi, yw = _frac(self.lats, lat)
         xi, xw = _frac(self.lons, lon)
-        return ti, tw, yi, yw, xi, xw
+        out = []
+        for tt, wt in ((t0, 1.0 - float(tw[0])), (t1, float(tw[0]))):
+            if wt == 0.0:
+                continue
+            for dy, wy in ((0, 1 - yw), (1, yw)):
+                for dx, wx in ((0, 1 - xw), (1, xw)):
+                    out.append((tt, (yi + dy) * nx + xi + dx, wt * wy * wx))
+        return out
 
     def pbl(self, t: float, lon, lat):
         """Boundary-layer height (m) at time t (s) and positions, floored at HPBL_MIN_M."""
-        ti, tw, yi, yw, xi, xw = self._hweights(t, lat, lon)
         out = 0.0
-        for dt, wt in ((0, 1 - tw), (1, tw)):
-            tt = np.minimum(ti + dt, len(self.times) - 1)
-            for dy, wy in ((0, 1 - yw), (1, yw)):
-                for dx, wx in ((0, 1 - xw), (1, xw)):
-                    out = out + wt * wy * wx * self.hpbl[tt, yi + dy, xi + dx]
+        for tt, yx, w in self._corners(t, lon, lat):
+            out = out + w * self._h[tt * self._yx + yx]
         return np.maximum(out, HPBL_MIN_M)
 
-    def wind(self, t: float, lon, lat, z):
-        """u, v (m/s) at time t (s), positions and heights z (m above ground)."""
-        ti, tw, yi, yw, xi, xw = self._hweights(t, lat, lon)
-        zi, zw = _frac(self.heights, z)
-        u = v = 0.0
-        for dt, wt in ((0, 1 - tw), (1, tw)):
-            tt = np.minimum(ti + dt, len(self.times) - 1)
+    def wind(self, t: float, lon, lat, z, with_divergence: bool = False):
+        """u, v (m/s) at time t (s), positions and heights z (m above ground).
+        With with_divergence, also the horizontal divergence (1/s) at the same points."""
+        dfield = self._divergence() if with_divergence else None
+        corners = self._corners(t, lon, lat)
+        nk, yx_n = self._nk, self._yx
+        if self._z is None:
+            zi, zw = _frac(self.heights, z)
+        else:  # local height of each pressure level, then the bracket around z
+            lev = [0.0, 0.0, 0.0]
+            for tt, yx, w in corners:
+                base = tt * 3 * yx_n + yx
+                for k in range(3):
+                    lev[k] = lev[k] + w * self._z[base + k * yx_n]
+            hts = np.stack([np.full(np.shape(z), self.heights[0]), *lev])
+            zi = (z >= hts[1]).astype(np.intp) + (z >= hts[2])
+            rows = np.arange(len(zi))
+            lower, upper = hts[zi, rows], hts[zi + 1, rows]
+            zw = np.clip((z - lower) / np.maximum(upper - lower, 1.0), 0.0, 1.0)
+        u = v = d = 0.0
+        for tt, yx, w in corners:
             for dz, wz in ((0, 1 - zw), (1, zw)):
-                zz = np.minimum(zi + dz, len(self.heights) - 1)
-                for dy, wy in ((0, 1 - yw), (1, yw)):
-                    for dx, wx in ((0, 1 - xw), (1, xw)):
-                        w = wt * wz * wy * wx
-                        u = u + w * self.u[tt, zz, yi + dy, xi + dx]
-                        v = v + w * self.v[tt, zz, yi + dy, xi + dx]
-        return u, v
+                idx = (tt * nk + np.minimum(zi + dz, nk - 1)) * yx_n + yx
+                ww = w * wz
+                u = u + ww * self._u[idx]
+                v = v + ww * self._v[idx]
+                if dfield is not None:
+                    d = d + ww * dfield[idx]
+        return (u, v, d) if with_divergence else (u, v)
 
 
 def from_netcdf(paths: list[Path], t0: np.datetime64 | None = None) -> Met:
@@ -96,8 +139,13 @@ def from_netcdf(paths: list[Path], t0: np.datetime64 | None = None) -> Met:
     order = ("valid_time", "isobaricInhPa", "latitude", "longitude")
     u = np.concatenate([ds.u10.values[:, None], ds.u.transpose(*order).values], axis=1)
     v = np.concatenate([ds.v10.values[:, None], ds.v.transpose(*order).values], axis=1)
+    z_agl = None
+    if "gh" in ds and "orog" in ds:
+        above = ds.gh.transpose(*order).values - ds.orog.values[:, None]
+        z_agl = np.maximum(above, np.array(MIN_LEVEL_HEIGHTS_M)[None, :, None, None])
+        z_agl = np.ascontiguousarray(z_agl, dtype=np.float32)
     return Met(
         times=times, lats=ds.latitude.values.astype(float), lons=ds.longitude.values.astype(float),
-        u=u.astype(np.float32), v=v.astype(np.float32), hpbl=ds.hpbl.values.astype(np.float32),
-        t0=t0,
+        u=np.ascontiguousarray(u, dtype=np.float32), v=np.ascontiguousarray(v, dtype=np.float32),
+        hpbl=np.ascontiguousarray(ds.hpbl.values, dtype=np.float32), t0=t0, z_agl=z_agl,
     )  # fmt: skip

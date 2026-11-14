@@ -20,12 +20,13 @@ CHECKS = [
         "SELECT count(*), max(observed_at) FROM fire_detection", "observed",
     ),
     (
-        "India stations (OpenAQ)", "stations_in",
+        "India reference stations", "stations_in",
         "SELECT count(*), max(r.observed_at) FROM station_reading r JOIN station s "
-        "USING (source, station_id) WHERE r.source = 'openaq' AND s.country = 'IN'", "observed",
+        "USING (source, station_id) WHERE r.source = 'openaq' AND s.country = 'IN' "
+        "AND s.is_reference", "observed",
     ),
     (
-        "Pakistan stations (OpenAQ)", "stations_pk",
+        "Pakistan stations (low-cost)", "stations_pk",
         "SELECT count(*), max(r.observed_at) FROM station_reading r JOIN station s "
         "USING (source, station_id) WHERE r.source = 'openaq' AND s.country = 'PK'", "observed",
     ),

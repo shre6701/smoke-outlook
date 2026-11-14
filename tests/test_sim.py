@@ -125,20 +125,40 @@ def test_backward_footprint_points_upwind():
 
 def test_emission_arithmetic_and_particle_mass():
     from sim import constants as c
-    from sim.fires import Fires, emission_kg, particles_for
+    from sim.fires import Fires, emission_area_kg, emission_frp_kg, particles_for
 
-    # 10 MW for one hour = 36,000 MJ -> 13,248 kg dry matter -> x EF g/kg
-    assert emission_kg(10.0, 6.26) == pytest.approx(36000 * 0.368 * 6.26 / 1000)
+    # Method B: 10 MW for one hour = 36,000 MJ -> 13,248 kg dry matter -> x EF g/kg
+    assert emission_frp_kg(10.0, 6.26) == pytest.approx(36000 * 0.368 * 6.26 / 1000)
+    # Method A: 2 pixels x 0.14 km2 x 0.902 kg/m2 = 252,560 kg dry matter -> x EF g/kg
+    assert emission_area_kg(2, 13.4) == pytest.approx(2 * 140_000 * 0.902 * 13.4 / 1000)
     t0 = np.datetime64("2026-11-14T12:00:00", "s")
     f = Fires(
         cluster=np.array([0, 0, 1]), lon=np.array([75.0, 75.01, 76.0]), lat=np.full(3, 30.0),
         observed=t0 + np.array([-3600, 0, 7200]).astype("timedelta64[s]"),
-        frp=np.array([1.0, 3.0, 20.0]),
+        frp=np.array([1.0, 3.0, 20.0]), pixels=np.array([1.0, 1.0, 4.0]),
     )  # fmt: skip
-    lon, lat, mass, release, cluster = particles_for(f, t0, 1000)
-    assert mass.sum() == pytest.approx(emission_kg(f.frp).sum())
-    assert mass[cluster == 1].sum() == pytest.approx(emission_kg(20.0))
+    lon, lat, mass, release, cluster, mass2 = particles_for(f, t0, 1000)
+    assert mass.sum() == pytest.approx(emission_area_kg(6))
+    assert mass[cluster == 1].sum() == pytest.approx(emission_area_kg(4))
+    assert mass2.sum() == pytest.approx(emission_frp_kg(24.0))
     assert release.min() >= -3600 and release.max() <= 7200 + c.BURN_SECONDS
+
+
+def test_level_heights_follow_the_terrain():
+    """With true level heights, a particle at 500 m sits between the 10 m wind and the first
+    pressure level wherever that level really is, not at a fixed 762 m."""
+    m = met(hours=2)
+    m.u[:, 0], m.u[:, 1], m.u[:, 2], m.u[:, 3] = 0.0, 10.0, 20.0, 30.0
+    shape = (len(m.times), 3, len(m.lats), len(m.lons))
+    z = np.empty(shape, dtype=np.float32)
+    z[:, 0], z[:, 1], z[:, 2] = 510.0, 1300.0, 2900.0
+    low = Met(times=m.times, lats=m.lats, lons=m.lons, u=m.u, v=m.v, hpbl=m.hpbl, z_agl=z)
+    pos = (np.array([75.1]), np.array([30.1]))
+    assert m.wind(0.0, *pos, np.array([510.0]))[0][0] == pytest.approx(10 * 500 / 752, rel=1e-4)
+    assert low.wind(0.0, *pos, np.array([510.0]))[0][0] == pytest.approx(10.0, rel=1e-4)
+    assert low.wind(0.0, *pos, np.array([905.0]))[0][0] == pytest.approx(15.0, rel=1e-4)
+    assert low.wind(0.0, *pos, np.array([9000.0]))[0][0] == pytest.approx(30.0, rel=1e-4)
+    assert low.wind(0.0, *pos, np.array([0.0]))[0][0] == pytest.approx(0.0, abs=1e-6)
 
 
 def test_met_uses_newest_cycle_and_older_one_only_before_it(tmp_path):
@@ -202,3 +222,58 @@ def test_same_seed_gives_identical_results():
         return run_forward(m, p, GRID, [Receptor("x", 30.3, 76.0)], 1, 12 * 3600.0)[1]
 
     assert np.array_equal(once(), once())
+
+
+def test_backward_contributions_match_forward_for_a_short_fire():
+    """A one-hour fire: smoke per receptor-hour from the backward run must match the forward
+    run in total and in timing, and must be attributed to the right cluster."""
+    from sim.engine import Sources
+
+    m = met(u=5.0, hpbl=1000.0, hours=24)
+    rng = np.random.default_rng(5)
+    n, kg = 40_000, 3600.0
+    p = make_particles(
+        75.0 + rng.random(n) * 0.1, 30.0 + rng.random(n) * 0.1, np.full(n, kg / n),
+        2 * 3600.0 + rng.random(n) * 3600.0, np.ones(n, dtype=int), mass2=np.full(n, 2 * kg / n),
+    )  # fmt: skip
+    rec = [Receptor("x", 30.05, 76.05), Receptor("upwind", 30.05, 74.0)]
+    prm = Params(v_dep=0.002)
+    times, _, fwd, stats = run_forward(m, p, GRID, rec, 2, 24 * 3600.0, prm=prm)
+    src = Sources(
+        lon=np.array([75.05]), lat=np.array([30.05]), start=np.array([2 * 3600.0]),
+        group=np.array([1]), rate=np.array([[kg / 3600.0], [2 * kg / 3600.0]]), duration=3600.0,
+    )  # fmt: skip
+    foot, back = run_backward(m, rec, GRID, times, 0.0, 1500, prm, sources=src, n_groups=2)
+    assert back.shape == (2, len(times), 2, 2)
+    assert back[:, :, 1].sum() == 0 and back[:, :, :, 0].sum() == 0  # upwind / other cluster
+    f, b = fwd[:, 0, 1], back[0, :, 0, 1]
+    assert b.sum() == pytest.approx(f.sum(), rel=0.15)
+    assert abs(int(b.argmax()) - int(f.argmax())) <= 1
+    assert back[1].sum() == pytest.approx(2 * back[0].sum(), rel=1e-5)  # second method = 2x
+    assert stats["contrib2"].sum() == pytest.approx(2 * fwd.sum(), rel=1e-5)
+
+
+def test_forward_and_backward_agree_in_spreading_wind():
+    """Wind that speeds up downwind (divergent flow) thins the smoke. The backward run must
+    account for that, or it overstates what reaches the receptor."""
+    from sim.engine import Sources
+
+    m = met(hpbl=1000.0, hours=24)
+    x_m = (m.lons - 74.0) * M_PER_DEG * np.cos(np.radians(30.0))
+    m.u[:] = (3.0 + 4e-5 * x_m)[None, None, None, :]  # 3 m/s at 74E, about 11 m/s at 76E
+    m = Met(times=m.times, lats=m.lats, lons=m.lons, u=m.u, v=m.v, hpbl=m.hpbl)
+    rng = np.random.default_rng(7)
+    n, kg = 40_000, 3600.0
+    p = make_particles(
+        75.0 + rng.random(n) * 0.1, 30.0 + rng.random(n) * 0.1, np.full(n, kg / n),
+        3600.0 + rng.random(n) * 3600.0, np.zeros(n, dtype=int),
+    )  # fmt: skip
+    rec = [Receptor("x", 30.05, 77.05)]
+    prm = Params(v_dep=0)
+    times, _, fwd, _ = run_forward(m, p, GRID, rec, 1, 24 * 3600.0, prm=prm)
+    src = Sources(
+        lon=np.array([75.05]), lat=np.array([30.05]), start=np.array([3600.0]),
+        group=np.array([0]), rate=np.array([[kg / 3600.0]]), duration=3600.0,
+    )  # fmt: skip
+    _, back = run_backward(m, rec, GRID, times, 0.0, 1500, prm, sources=src, n_groups=1)
+    assert fwd.sum() > 0 and back.sum() == pytest.approx(fwd.sum(), rel=0.15)

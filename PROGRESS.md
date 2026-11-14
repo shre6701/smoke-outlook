@@ -85,8 +85,36 @@ Target machine: Windows + WSL2, 16 GB RAM, no GPU, 20-50 GB free disk.
 - Stations median 141 µg/m³ and CAMS 62–77, against simulated fire smoke of about 0.1: the emission scale problem above, confirmed.
 - Not tested: the data.gov.in fetcher against the real site; GFS download failure half-way; behaviour with zero fires in season; anything on a second machine.
 
+### Improvement round (2026-11-14, branch `stage-2c-boundaries-emissions`)
+
+**Added**
+- **Boundaries:** Natural Earth (public domain) countries, states/provinces and disputed areas in table `boundary`; SQL function `place_of(point)`. A point in a disputed area is tagged `disputed` with the area's name, on every side, never as either country. Each fire cluster now has `country` and `region`; view `sim_source_share` gives the daily share per city by source (UTC days, forecast hours only).
+- **Emissions, two cited methods side by side:** A) burned area, 0.14 km² per detected pixel × 902 g/m² crop fuel (FINN v2.5) — central and high; B) fire power × 1 h (Wooster 2005) — low. First run: 562 t PM2.5 (range 28–1,056 t). The range is honest: a factor of about 40.
+- **No double counting:** the same fire seen by NOAA-20 and NOAA-21 in one pass window is one event, sized by the satellite that saw more pixels (659 detections → 555 events).
+- **City numbers from backward runs:** air is followed back from each city and meets the fires on the way. Top-10 cluster ranking is now 6–10 of 10 stable between seeds (was 3–9), noise 2–6%.
+- **Self-check in every run:** forward and backward doses are compared per city; outside 0.67–1.5 the city is printed and stored as low confidence. Now: Delhi 0.98, Lahore 1.10, Amritsar 0.87, **Chandigarh 0.48 (low confidence)**.
+- **Divergence correction** for backward runs (found by the self-check: without it the two methods differed by up to 2× in real winds).
+- **True level heights:** GFS geopotential height and terrain are ingested; 925 hPa is 570 m above the Punjab plain, not the 762 m assumed before.
+- **Wider weather area** (domain + 4°, was 1°): particles lost from the grid fall from 65% to 42%. No extra download.
+- **Zero-fire day** gives a zero run, not an error. Outlook peaks are reported for forecast hours only.
+- **Status** now watches India *reference* stations separately, so a stale CPCB mirror cannot hide behind fresh low-cost sensors.
+- 42 tests (was 35), incl. disputed class, two-satellite merge, terrain heights, spreading wind, daily shares.
+
+**Station alternatives to data.gov.in (checked, none added)**
+- data.gov.in and CPCB's own sites: still down / unreachable from this network.
+- WAQI (aqicn.org): terms forbid redistributing cached or archived data, ask for notice before public use, and the feed is an index, not concentrations. Not usable for validation or a stored history.
+- XKDR database: an archive (last export 2026-09-30), not live. Still right for Stage 3.
+- OpenAQ stays the live source (148 India reference stations reporting).
+
+**Still weak**
+- Absolute smoke is still low: peaks of 1–2 µg/m³ at the cities against station medians near 140 (all sources). Only the last 24 h of fires are released and no fitted scale is used. Stage 3 decides.
+- Chandigarh, next to the mountains: forward and backward disagree by 2×.
+- Shares rest on fires seen in the last 24 h only; they are simulated and unvalidated, in both directions.
+- Burn fraction for method A is assumed to be 100% (not read from the FINN paper). The 1-hour burn (method B) and horizontal mixing remain assumptions.
+- Not built (needs your decision, touches the "no synthetic data" rule): repeating today's fires on forecast days 2–3.
+
 **Next (Stage 2b)**
-- Live map. Needs a decision first: which boundary dataset to use for country/region tags (disputed borders in the domain; must stay neutral).
+- Live map, using `sim_source_share`, `sim_receptor_outlook`, `sim_cluster` and `data/sim/*.nc`. Show the low-confidence flag.
 - Label everything "simulated – not yet validated"; show shares, not absolute µg/m³, until Stage 3.
 
 ## Later

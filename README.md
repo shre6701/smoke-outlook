@@ -20,7 +20,7 @@ uv run python -m ingest.run      # GFS, FIRMS, stations, CAMS -> Postgres (about
 uv run python -m ingest.status   # rows, newest timestamp, STALE flags per source
 ```
 
-Then the simulation (Stage 2, about 75 s):
+Then the simulation (Stage 2, about 2 min):
 
 ```bash
 uv run python -m sim.run         # 72 h smoke forecast: grid + cluster-to-city contribution table

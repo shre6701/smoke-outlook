@@ -31,15 +31,17 @@ class Particles:
     release: np.ndarray  # s since met.t0
     group: np.ndarray  # cluster index (forward) or receptor index (backward)
     alive: np.ndarray
+    mass2: np.ndarray | None = None  # same smoke under a second emission method
 
     @property
     def n(self) -> int:
         return len(self.lon)
 
 
-def make_particles(lon, lat, mass, release, group) -> Particles:
+def make_particles(lon, lat, mass, release, group, mass2=None) -> Particles:
     lon = np.asarray(lon, dtype=float)
     return Particles(
+        mass2=None if mass2 is None else np.asarray(mass2, dtype=float).copy(),
         lon=lon.copy(), lat=np.asarray(lat, dtype=float).copy(), z=np.zeros(len(lon)),
         mass=np.asarray(mass, dtype=float).copy(), release=np.asarray(release, dtype=float),
         group=np.asarray(group, dtype=np.intp), alive=np.ones(len(lon), dtype=bool),
@@ -51,7 +53,18 @@ def step(met: Met, p: Particles, idx: np.ndarray, t: float, dt: float, prm: Para
     if len(idx) == 0:
         return
     lon, lat, z = p.lon[idx], p.lat[idx], p.z[idx]
-    u, v = met.wind(t, lon, lat, z)
+    if dt < 0:
+        # Backward in time, air that spreads out sideways (divergence) is being replaced by
+        # clean air from above, so the smoke it can carry to the receptor shrinks by
+        # exp(-divergence x time). Without this, forward and backward runs disagree in real,
+        # divergent winds (they agree only in uniform flow).
+        u, v, div = met.wind(t, lon, lat, z, with_divergence=True)
+        squeeze = np.exp(-div * abs(dt))
+        p.mass[idx] *= squeeze
+        if p.mass2 is not None:
+            p.mass2[idx] *= squeeze
+    else:
+        u, v = met.wind(t, lon, lat, z)
     dx, dy = u * dt, v * dt
     if prm.k_h > 0:
         sigma = np.sqrt(2 * prm.k_h * abs(dt))
@@ -64,7 +77,10 @@ def step(met: Met, p: Particles, idx: np.ndarray, t: float, dt: float, prm: Para
     mixed = z <= h
     z = np.where(mixed, rng.random(len(idx)) * h, z)
     if prm.v_dep > 0:
-        p.mass[idx] = np.where(mixed, p.mass[idx] * np.exp(-prm.v_dep * abs(dt) / h), p.mass[idx])
+        keep = np.where(mixed, np.exp(-prm.v_dep * abs(dt) / h), 1.0)
+        p.mass[idx] *= keep
+        if p.mass2 is not None:
+            p.mass2[idx] *= keep
     p.lon[idx], p.lat[idx], p.z[idx] = lon_new, lat_new, z
     p.alive[idx] = ok
 
@@ -136,6 +152,7 @@ def run_forward(met: Met, p: Particles, grid: Grid, receptors: list[Receptor], n
     out_times = np.arange(np.ceil(t / out_every) * out_every, t_end + 1, out_every)
     conc = np.zeros((len(out_times), *grid.shape), dtype=np.float32)
     contrib = np.zeros((len(out_times), len(receptors), n_groups), dtype=np.float32)
+    contrib2 = np.zeros_like(contrib) if p.mass2 is not None else None
     started = np.zeros(p.n, dtype=bool)
     k = 0
     while True:
@@ -149,11 +166,17 @@ def run_forward(met: Met, p: Particles, grid: Grid, receptors: list[Receptor], n
             h = met.pbl(t, lon, lat)
             w = np.where(p.z[idx] <= h, p.mass[idx] * 1e9 / h, 0.0)  # µg per m of depth
             conc[k] = grid.bin(lon, lat, w)
+            w2 = None
+            if contrib2 is not None:
+                w2 = np.where(p.z[idx] <= h, p.mass2[idx] * 1e9 / h, 0.0)
             for r, rec in enumerate(receptors):
                 m = rec.mask(lon, lat)
-                contrib[k, r] = (
-                    np.bincount(p.group[idx][m], weights=w[m], minlength=n_groups) / rec.area_m2()
-                )
+                g = p.group[idx][m]
+                contrib[k, r] = np.bincount(g, weights=w[m], minlength=n_groups) / rec.area_m2()
+                if w2 is not None:
+                    contrib2[k, r] = (
+                        np.bincount(g, weights=w2[m], minlength=n_groups) / rec.area_m2()
+                    )
             k += 1
         if t >= t_end - 1e-6:
             break
@@ -163,46 +186,111 @@ def run_forward(met: Met, p: Particles, grid: Grid, receptors: list[Receptor], n
         "particles": p.n,
         "left_grid_frac": float(1 - p.alive.mean()),
         "mass_left_frac": float(p.mass[p.alive].sum() / max(p.mass.sum(), 1e-30)),
+        "contrib2": contrib2,
     }
     return out_times, conc, contrib, stats
 
 
-def run_backward(met: Met, receptors: list[Receptor], grid: Grid, arrivals: np.ndarray,
-                 t_stop: float, n_per_arrival: int = 300, prm: Params | None = None):  # fmt: skip
-    """Footprint per receptor: where the air arriving at the receptor spent time near the ground.
+@dataclass
+class Sources:
+    """Emission events for the receptor-oriented (backward) calculation.
+    rate: [n_methods, n_events] kg/s, emitted from `start` for `duration` seconds."""
 
-    Returns [receptor, lat, lon] in s/m³: multiply a cell's emission rate (kg/s) by its value
-    to get that cell's mean contribution (kg/m³) at the receptor, averaged over the arrivals.
-    Deposition is ignored on the way back.
+    lon: np.ndarray
+    lat: np.ndarray
+    start: np.ndarray  # s since met.t0
+    group: np.ndarray  # cluster index
+    rate: np.ndarray
+    duration: float
+
+
+def run_backward(met: Met, receptors: list[Receptor], grid: Grid, arrivals: np.ndarray,
+                 t_stop: float, n_per_arrival: int = 300, prm: Params | None = None,
+                 sources: Sources | None = None, n_groups: int = 0):  # fmt: skip
+    """Follow the air arriving at each receptor backward in time.
+
+    Returns the footprint [receptor, lat, lon] in s/m³: multiply a cell's emission rate (kg/s)
+    by its value to get that cell's mean contribution (kg/m³) at the receptor, averaged over
+    the arrivals.
+
+    With `sources`, also returns contrib [method, arrival, receptor, group] in µg/m³: every
+    time a particle is inside the boundary layer over a cell and time slot where a source is
+    emitting, that source's share is added. All particles start at a receptor, so this is far
+    less noisy for receptors than counting forward particles that happen to arrive there.
     """
     prm = prm or Params()
-    prm = Params(dt=prm.dt, k_h=prm.k_h, v_dep=0.0, seed=prm.seed + 1)
+    prm = Params(dt=prm.dt, k_h=prm.k_h, v_dep=prm.v_dep, seed=prm.seed + 1)
     rng = np.random.default_rng(prm.seed)
-    n = len(receptors) * len(arrivals) * n_per_arrival
-    rec_i = np.repeat(np.arange(len(receptors)), len(arrivals) * n_per_arrival)
+    n_rec, n_arr, dt = len(receptors), len(arrivals), prm.dt
+    n = n_rec * n_arr * n_per_arrival
+    rec_i = np.repeat(np.arange(n_rec), n_arr * n_per_arrival)
+    arr_i = np.tile(np.repeat(np.arange(n_arr), n_per_arrival), n_rec)
     hb = np.array([r.half_box for r in receptors])[rec_i]
     p = make_particles(
         lon=np.array([r.lon for r in receptors])[rec_i] + rng.uniform(-1, 1, n) * hb,
         lat=np.array([r.lat for r in receptors])[rec_i] + rng.uniform(-1, 1, n) * hb,
-        mass=np.ones(n),
-        release=np.tile(np.repeat(arrivals, n_per_arrival), len(receptors)),
+        mass=np.ones(n),  # fraction of the smoke that survives deposition on the way
+        release=np.asarray(arrivals, dtype=float)[arr_i],
         group=rec_i,
     )
-    foot = np.zeros((len(receptors), *grid.shape))
+    ny, nx = grid.shape
+    ncell, area = ny * nx, grid.area_m2()
+    foot = np.zeros((n_rec, ny, nx))
+    contrib = None
+    if sources is not None:
+        n_slot = max(1, round(sources.duration / dt))
+        iy = np.floor((sources.lat - grid.south) / grid.res).astype(np.intp)
+        ix = np.floor((sources.lon - grid.west) / grid.res).astype(np.intp)
+        ok = (iy >= 0) & (iy < ny) & (ix >= 0) & (ix < nx)
+        slot0 = np.floor(sources.start / dt).astype(np.int64)
+        slot_min = int(slot0.min()) if len(slot0) else 0
+        ev = np.repeat(np.flatnonzero(ok), n_slot)
+        slots = (slot0[ok, None] - slot_min + np.arange(n_slot)).ravel()
+        key = (slots * ncell + iy[ev] * nx + ix[ev]) * n_groups + sources.group[ev]
+        ukey, inv = np.unique(key, return_inverse=True)
+        rate = np.stack(
+            [np.bincount(inv, weights=r[ev], minlength=len(ukey)) for r in sources.rate]
+        )
+        ucell, ugrp = ukey // n_groups, ukey % n_groups
+        size = n_arr * n_rec * n_groups
+        contrib = np.zeros((len(sources.rate), size))
     started = np.zeros(n, dtype=bool)
-    t = float(np.ceil(arrivals.max() / prm.dt) * prm.dt)
+    t = float(np.ceil(np.max(arrivals) / dt) * dt)
     while t > t_stop + 1e-6:
         new = (~started) & (p.release >= t)
         if new.any():
             p.z[new] = rng.random(int(new.sum())) * met.pbl(t, p.lon[new], p.lat[new])
             started |= new
         idx = np.flatnonzero(started & p.alive)
-        step(met, p, idx, t, -prm.dt, prm, rng)
-        t -= prm.dt
+        step(met, p, idx, t, -dt, prm, rng)
+        t -= dt
         idx = idx[p.alive[idx]]
-        h = met.pbl(t, p.lon[idx], p.lat[idx])
-        w = np.where(p.z[idx] <= h, prm.dt / h, 0.0)
-        for r in range(len(receptors)):
-            m = p.group[idx] == r
-            foot[r] += grid.bin(p.lon[idx][m], p.lat[idx][m], w[m])
-    return (foot / (len(arrivals) * n_per_arrival)).astype(np.float32)
+        lon, lat = p.lon[idx], p.lat[idx]
+        h = met.pbl(t, lon, lat)
+        cy = np.floor((lat - grid.south) / grid.res).astype(np.intp)
+        cx = np.floor((lon - grid.west) / grid.res).astype(np.intp)
+        use = (p.z[idx] <= h) & (cy >= 0) & (cy < ny) & (cx >= 0) & (cx < nx)
+        idx, h, cy, cx = idx[use], h[use], cy[use], cx[use]
+        w = p.mass[idx] * dt / (h * area[cy])  # s/m³ per particle
+        cell = cy * nx + cx
+        foot += np.bincount(
+            p.group[idx] * ncell + cell, weights=w, minlength=n_rec * ncell
+        ).reshape(n_rec, ny, nx)
+        if contrib is not None and len(ukey):
+            pk = (round(t / dt) - slot_min) * ncell + cell
+            lo = np.searchsorted(ucell, pk, side="left")
+            cnt = np.searchsorted(ucell, pk, side="right") - lo
+            j = 0
+            sel = np.flatnonzero(cnt > 0)
+            while len(sel):
+                e = lo[sel] + j
+                flat = (arr_i[idx[sel]] * n_rec + p.group[idx[sel]]) * n_groups + ugrp[e]
+                for s in range(len(contrib)):
+                    contrib[s] += np.bincount(flat, weights=w[sel] * rate[s, e], minlength=size)
+                j += 1
+                sel = sel[cnt[sel] > j]
+    foot = (foot / (n_arr * n_per_arrival)).astype(np.float32)
+    if contrib is None:
+        return foot
+    contrib = contrib.reshape(len(contrib), n_arr, n_rec, n_groups) * 1e9 / n_per_arrival
+    return foot, contrib.astype(np.float32)
