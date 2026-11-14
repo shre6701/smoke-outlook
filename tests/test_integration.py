@@ -254,9 +254,9 @@ def test_sim_run_end_to_end(testdb, tmp_path, session_tz):
     add_fire(conn, 28.61, 76.2, 50.0, now - timedelta(hours=2), now - timedelta(hours=1))
     add_fire(conn, 28.61, 76.21, 30.0, now - timedelta(hours=2), now - timedelta(hours=1))
     add_fire(conn, 28.61, 78.5, 60.0, now - timedelta(hours=2), now - timedelta(hours=1))
-    # Not allowed in this run: seen by us only after `now`, or older than 24 h.
+    # Not allowed in this run: seen by us only after `now`, or older than 72 h.
     add_fire(conn, 28.61, 76.5, 999.0, now - timedelta(hours=1), now + timedelta(hours=2))
-    add_fire(conn, 28.61, 76.5, 999.0, now - timedelta(hours=30), now - timedelta(hours=29))
+    add_fire(conn, 28.61, 76.5, 999.0, now - timedelta(hours=80), now - timedelta(hours=79))
     conn.commit()
 
     r = sim_run.run(conn, now, n_particles=4000, out_dir=tmp_path / "sim", n_per_arrival=200)
@@ -416,3 +416,103 @@ def test_daily_source_share_adds_up_and_uses_forecast_hours_only(testdb, tmp_pat
     assert all(r[3] == pytest.approx(1.0) for r in rows)
     assert min(r[1] for r in rows) >= now.date()
     assert conn.execute("SELECT DISTINCT country FROM sim_cluster").fetchall() == [("AA",)]
+
+
+def test_sim_uses_past_wind_cycles_but_never_as_ensemble_members(testdb, tmp_path):
+    """Short cycles (first hours only) carry real winds for the days just past. A fire seen
+    30 h ago must be moved by them, and they must not count as forecast members."""
+    from sim import run as sim_run
+
+    conn = testdb()
+    sim_run.ensure_schema(conn)
+    now = datetime.now(UTC).replace(microsecond=0)
+    init = (now - timedelta(hours=5)).replace(minute=0, second=0)
+    write_cycle(tmp_path / "new.nc", init, u=0.0)  # calm forecast
+    add_cycle(conn, tmp_path / "new.nc", init, init + timedelta(hours=4))
+    for i in range(1, 7):  # six short past cycles with a 5 m/s westerly
+        t = init - timedelta(hours=6 * i)
+        write_cycle(tmp_path / f"p{i}.nc", t, u=5.0, hours=5)
+        conn.execute(
+            "INSERT INTO gfs_cycle VALUES (%s, %s, %s, %s, 'test', now(), 1, 6, '{u}', %s, "
+            "ST_MakeEnvelope(69, 25, 81, 35, 4326))",
+            (t, t, t + timedelta(hours=5), t + timedelta(hours=4), str(tmp_path / f"p{i}.nc")),
+        )
+    # 30 h ago, 300 km west of Delhi: reaches Delhi only if the past westerlies are used.
+    add_fire(conn, 28.61, 74.1, 50.0, now - timedelta(hours=30), now - timedelta(hours=29))
+    conn.commit()
+    r = sim_run.run(conn, now, n_particles=3000, out_dir=tmp_path / "sim", n_per_arrival=150)
+    assert r["members"] == [f"gfs_{init:%Y%m%d_%H}"]  # short cycles are not members
+    assert r["n_events"] == 1
+    first, peak = conn.execute(
+        "SELECT min(valid_at), max(pm25_ugm3) FROM sim_receptor_hourly WHERE receptor = 'Delhi'"
+    ).fetchone()
+    assert peak > 0
+    assert abs((first - (now - timedelta(hours=24))).total_seconds()) <= 3600  # nowcast window
+
+
+def test_gfs_ingest_failure_leaves_no_half_written_cycle(testdb, tmp_path, monkeypatch):
+    from weather import gfs
+
+    conn = testdb()
+    db.ensure_schema(conn)
+    init = datetime(2026, 11, 14, 12, tzinfo=UTC)
+    monkeypatch.setattr(gfs, "OUT_DIR", tmp_path / "gfs")
+    monkeypatch.setattr(gfs, "RAW_DIR", tmp_path / "raw")
+    monkeypatch.setattr(gfs, "published_at", lambda init, fxx=72: (init, "test"))
+
+    class Fake:
+        def download(self, search):
+            return None
+
+    monkeypatch.setattr(gfs, "_herbie", lambda init, fxx: Fake())
+
+    def broken(init, fxx):
+        raise OSError("connection dropped at hour 3")
+
+    monkeypatch.setattr(gfs, "load_step", broken)
+    with pytest.raises(OSError):
+        gfs.ingest_cycle(conn, init, 1, max_fxx=5)
+    conn.rollback()
+    assert conn.execute("SELECT count(*) FROM gfs_cycle").fetchone()[0] == 0
+    assert not list((tmp_path / "gfs").glob("*")) if (tmp_path / "gfs").exists() else True
+
+    # The whole source then reports "failed" through the runner, and other sources still run.
+    monkeypatch.setattr(gfs, "latest_complete_cycle", lambda now=None: init)
+    failed = ingest_run.run_once(
+        ["gfs", "ok"], {"gfs": gfs.ingest, "ok": lambda conn: ("ok", 1, "fine")}
+    )
+    assert failed == 1
+    rows = testdb().execute("SELECT source, status FROM ingest_run ORDER BY id").fetchall()
+    assert rows == [("gfs", "failed"), ("ok", "ok")]
+
+
+def test_datagov_fetch_pages_through_and_stores_as_published(testdb, monkeypatch):
+    conn = testdb()
+    db.ensure_schema(conn)
+    ist_now = datetime.now(UTC) + timedelta(hours=5, minutes=30) - timedelta(hours=1)
+    stamp = ist_now.strftime("%d-%m-%Y %H:00:00")
+
+    def rec(i, pollutant="PM2.5", value="120"):
+        return {"station": f"Station {i}", "latitude": "28.6", "longitude": "77.2",
+                "last_update": stamp, "pollutant_id": pollutant, "avg_value": value}  # fmt: skip
+
+    pages = {
+        0: [rec(i) for i in range(1000)],
+        1000: [rec(1000), rec(1001, "NO2"), rec(1002, value="NA")],
+    }
+    calls = []
+
+    def fake_get(url, params=None, **kw):
+        calls.append(params["offset"])
+        assert params["api-key"] == "k"
+        return Reply(payload={"records": pages[params["offset"]]})
+
+    monkeypatch.setenv("DATAGOV_API_KEY", "k")
+    monkeypatch.setattr(stations, "get", fake_get)
+    status_, new, _ = stations.ingest_datagov(conn)
+    assert (status_, new) == ("ok", 1001) and calls == [0, 1000]
+    assert stations.ingest_datagov(conn)[1] == 0
+    unit, param, n = conn.execute(
+        "SELECT unit, parameter, count(*) FROM station_reading GROUP BY 1, 2"
+    ).fetchone()
+    assert (unit, param, n) == ("as published", "pm25_avg_as_published", 1001)

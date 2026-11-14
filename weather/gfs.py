@@ -22,6 +22,7 @@ SEARCH = (
 )
 N_FIELDS = 10
 MAX_FXX = 72
+SHORT_FXX = 5  # older cycles: only the hours until the next cycle starts (past winds)
 PAD = 4.0  # degrees kept around the domain so smoke that leaves can come back
 RAW_DIR = config.DATA_DIR / "gfs_raw"
 OUT_DIR = config.DATA_DIR / "gfs"
@@ -50,10 +51,10 @@ def latest_complete_cycle(now: datetime | None = None) -> datetime | None:
     return None
 
 
-def published_at(init: datetime) -> tuple[datetime, str]:
-    """When the cycle became complete: S3 Last-Modified of the last forecast hour."""
+def published_at(init: datetime, fxx: int = MAX_FXX) -> tuple[datetime, str]:
+    """When the cycle became complete: S3 Last-Modified of the last forecast hour used."""
     try:
-        r = requests.head(_herbie(init, MAX_FXX).grib, timeout=30)
+        r = requests.head(_herbie(init, fxx).grib, timeout=30)
         return parsedate_to_datetime(r.headers["Last-Modified"]), "s3_last_modified"
     except (requests.RequestException, KeyError, TypeError, ValueError):
         return datetime.now(UTC), "first_seen"
@@ -84,30 +85,50 @@ def load_step(init: datetime, fxx: int):
     return ds.expand_dims(valid_time=[ds["valid_time"].values]).load()
 
 
-def ingest(conn, step_hours: int = 1, back: int = 0) -> tuple[str, int, str]:
-    """Store the latest complete cycle, and the `back` cycles before it if missing."""
+def ingest(conn, step_hours: int = 1, back: int = 0, history_hours: int = 72):
+    """Store the latest complete cycle in full, the `back` cycles before it in full
+    (ensemble members), and the first hours of every older cycle within `history_hours`
+    (real winds for the days just past, each hour from the newest forecast issued by then)."""
     latest = latest_complete_cycle()
     if latest is None:
         raise RuntimeError("no complete GFS cycle found in the last 36 h")
-    total, notes = 0, []
-    for i in range(back, -1, -1):
-        rows, note = ingest_cycle(conn, latest - timedelta(hours=6 * i), step_hours)
+    total, new_full, new_short, failed = 0, [], 0, []
+    for i in range(history_hours // 6, -1, -1):
+        init = latest - timedelta(hours=6 * i)
+        full = i <= back
+        try:
+            rows = ingest_cycle(conn, init, step_hours, MAX_FXX if full else SHORT_FXX)
+        except Exception as e:  # noqa: BLE001 - an old cycle may be missing; keep the others
+            conn.rollback()
+            if i == 0:
+                raise
+            failed.append(f"{init:%d %HZ} ({type(e).__name__})")
+            continue
         total += rows
-        notes.append(note)
-    return "ok", total, "; ".join(notes)
+        if rows and full:
+            new_full.append(f"{init:%d %HZ}")
+        new_short += bool(rows and not full)
+    note = f"latest {latest:%Y-%m-%d %HZ}; new full cycles: {', '.join(new_full) or 'none'}; "
+    note += f"new past-wind cycles: {new_short}"
+    if failed:
+        note += f"; could not fetch: {', '.join(failed)}"
+    return "ok", total, note
 
 
-def ingest_cycle(conn, init: datetime, step_hours: int) -> tuple[int, str]:
+def ingest_cycle(conn, init: datetime, step_hours: int, max_fxx: int = MAX_FXX) -> int:
+    """Store one cycle up to forecast hour max_fxx. Returns the number of times written
+    (0 if an equal or longer copy is already stored)."""
     import xarray as xr
 
+    hours = list(range(0, max_fxx + 1, step_hours))
     have = conn.execute(
-        "SELECT step_hours FROM gfs_cycle WHERE init_time = %s AND variables = %s AND path LIKE %s",
-        (init, VARIABLES, f"%pad{PAD:g}%"),
+        "SELECT 1 FROM gfs_cycle WHERE init_time = %s AND variables = %s AND path LIKE %s "
+        "AND step_hours <= %s AND n_times >= %s",
+        (init, VARIABLES, f"%pad{PAD:g}%", step_hours, len(hours)),
     ).fetchone()
-    if have and have[0] <= step_hours:  # coarser or older-format cycles are replaced
-        return 0, f"{init:%Y-%m-%d %HZ} already stored"
-    pub, basis = published_at(init)
-    hours = list(range(0, MAX_FXX + 1, step_hours))
+    if have:
+        return 0
+    pub, basis = published_at(init, max_fxx)
     # Download the byte ranges in parallel; decode one at a time (eccodes is not thread-safe).
     with ThreadPoolExecutor(8) as pool:
         list(pool.map(lambda f: _herbie(init, f).download(SEARCH), hours))
@@ -122,8 +143,10 @@ def ingest_cycle(conn, init: datetime, step_hours: int) -> tuple[int, str]:
     if variables != VARIABLES or levels != 3:
         raise RuntimeError(f"GFS subset incomplete: vars={variables} levels={levels}")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    path = OUT_DIR / f"gfs_{init:%Y%m%d_%H}_pad{PAD:g}.nc"
-    ds.to_netcdf(path)
+    path = OUT_DIR / f"gfs_{init:%Y%m%d_%H}_pad{PAD:g}_f{max_fxx:03d}.nc"
+    tmp = path.with_suffix(".part")
+    ds.to_netcdf(tmp)
+    tmp.replace(path)  # the catalogue never points at a half-written file
     times = [init + timedelta(hours=h) for h in hours]
     lat0, lat1 = float(ds.latitude.min()), float(ds.latitude.max())
     lon0, lon1 = float(ds.longitude.min()), float(ds.longitude.max())
@@ -134,7 +157,9 @@ def ingest_cycle(conn, init: datetime, step_hours: int) -> tuple[int, str]:
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, ST_MakeEnvelope(%s, %s, %s, %s, 4326))
         ON CONFLICT (init_time) DO UPDATE SET step_hours = EXCLUDED.step_hours,
             n_times = EXCLUDED.n_times, variables = EXCLUDED.variables, bbox = EXCLUDED.bbox,
-            path = EXCLUDED.path, ingested_at = now()
+            path = EXCLUDED.path, observed_to = EXCLUDED.observed_to,
+            published_at = EXCLUDED.published_at,
+            ingested_at = now()
         """,
         (init, times[0], times[-1], pub, basis, step_hours, len(times), variables,
          str(path.relative_to(config.ROOT)), lon0, lat0, lon1, lat1),
@@ -143,4 +168,4 @@ def ingest_cycle(conn, init: datetime, step_hours: int) -> tuple[int, str]:
     for f in RAW_DIR.rglob("*"):  # raw GRIB subsets are not needed after cropping
         if f.is_file():
             f.unlink()
-    return len(times), f"{init:%Y-%m-%d %HZ} stored ({len(times)} times)"
+    return len(times)

@@ -277,3 +277,31 @@ def test_forward_and_backward_agree_in_spreading_wind():
     )  # fmt: skip
     _, back = run_backward(m, rec, GRID, times, 0.0, 1500, prm, sources=src, n_groups=1)
     assert fwd.sum() > 0 and back.sum() == pytest.approx(fwd.sum(), rel=0.15)
+
+
+def test_piling_up_wind_vents_smoke_instead_of_concentrating_it():
+    """Wind that slows down downwind (convergent flow) squeezes air together. The surplus
+    leaves through the top of the boundary layer, so the ground concentration must not rise,
+    and forward and backward runs must still agree."""
+    from sim.engine import Sources
+
+    m = met(hpbl=1000.0, hours=24)
+    x_m = (m.lons - 74.0) * M_PER_DEG * np.cos(np.radians(30.0))
+    m.u[:] = np.maximum(9.0 - 3e-5 * x_m, 1.0)[None, None, None, :]  # 9 m/s at 74E, slowing
+    m = Met(times=m.times, lats=m.lats, lons=m.lons, u=m.u, v=m.v, hpbl=m.hpbl)
+    rng = np.random.default_rng(9)
+    n, kg = 40_000, 3600.0
+    p = make_particles(
+        74.5 + rng.random(n) * 0.1, 30.0 + rng.random(n) * 0.1, np.full(n, kg / n),
+        3600.0 + rng.random(n) * 3600.0, np.zeros(n, dtype=int),
+    )  # fmt: skip
+    rec = [Receptor("x", 30.05, 76.05)]
+    prm = Params(v_dep=0)
+    times, conc, fwd, stats = run_forward(m, p, GRID, rec, 1, 24 * 3600.0, prm=prm)
+    assert stats["mass_left_frac"] < 0.9  # some smoke was vented
+    src = Sources(
+        lon=np.array([74.55]), lat=np.array([30.05]), start=np.array([3600.0]),
+        group=np.array([0]), rate=np.array([[kg / 3600.0]]), duration=3600.0,
+    )  # fmt: skip
+    _, back = run_backward(m, rec, GRID, times, 0.0, 1500, prm, sources=src, n_groups=1)
+    assert fwd.sum() > 0 and back.sum() == pytest.approx(fwd.sum(), rel=0.15)

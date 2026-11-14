@@ -53,18 +53,20 @@ def step(met: Met, p: Particles, idx: np.ndarray, t: float, dt: float, prm: Para
     if len(idx) == 0:
         return
     lon, lat, z = p.lon[idx], p.lat[idx], p.z[idx]
-    if dt < 0:
-        # Backward in time, air that spreads out sideways (divergence) is being replaced by
-        # clean air from above, so the smoke it can carry to the receptor shrinks by
-        # exp(-divergence x time). Without this, forward and backward runs disagree in real,
-        # divergent winds (they agree only in uniform flow).
-        u, v, div = met.wind(t, lon, lat, z, with_divergence=True)
-        squeeze = np.exp(-div * abs(dt))
-        p.mass[idx] *= squeeze
-        if p.mass2 is not None:
-            p.mass2[idx] *= squeeze
-    else:
-        u, v = met.wind(t, lon, lat, z)
+    # The model has no vertical wind, so sideways spreading or piling-up of air must be
+    # balanced through the top of the boundary layer:
+    #  - spreading (divergence > 0): clean air is mixed in from above -> smoke is diluted.
+    #    Forward this happens by itself (particles move apart); backward it is a weight.
+    #  - piling-up (divergence < 0): the surplus air, with its smoke, leaves through the top.
+    #    Forward the surplus mass is removed; backward nothing is needed.
+    # With both rules the forward and backward runs describe the same physics.
+    u, v, div = met.wind(t, lon, lat, z, with_divergence=True)
+    change = (
+        np.exp(-np.maximum(div, 0.0) * abs(dt)) if dt < 0 else np.exp(np.minimum(div, 0.0) * dt)
+    )
+    p.mass[idx] *= change
+    if p.mass2 is not None:
+        p.mass2[idx] *= change
     dx, dy = u * dt, v * dt
     if prm.k_h > 0:
         sigma = np.sqrt(2 * prm.k_h * abs(dt))
@@ -138,7 +140,8 @@ class Receptor:
 
 
 def run_forward(met: Met, p: Particles, grid: Grid, receptors: list[Receptor], n_groups: int,
-                t_end: float, out_every: float = 3600.0, prm: Params | None = None):  # fmt: skip
+                t_end: float, out_every: float = 3600.0, prm: Params | None = None,
+                t_out_start: float | None = None):  # fmt: skip
     """Run from the first release to t_end.
 
     Returns (out_times [s], conc [time, lat, lon] µg/m³ near the ground,
@@ -149,11 +152,15 @@ def run_forward(met: Met, p: Particles, grid: Grid, receptors: list[Receptor], n
     prm = prm or Params()
     rng = np.random.default_rng(prm.seed)
     t = float(np.floor(p.release.min() / prm.dt) * prm.dt)
-    out_times = np.arange(np.ceil(t / out_every) * out_every, t_end + 1, out_every)
+    first_out = np.ceil(t / out_every) * out_every
+    if t_out_start is not None:  # smoke is followed from the first fire, reported from here
+        first_out = max(first_out, np.ceil(t_out_start / out_every) * out_every)
+    out_times = np.arange(first_out, t_end + 1, out_every)
     conc = np.zeros((len(out_times), *grid.shape), dtype=np.float32)
     contrib = np.zeros((len(out_times), len(receptors), n_groups), dtype=np.float32)
     contrib2 = np.zeros_like(contrib) if p.mass2 is not None else None
     started = np.zeros(p.n, dtype=bool)
+    mass_start = float(p.mass.sum())
     k = 0
     while True:
         new = (~started) & (p.release <= t)
@@ -185,7 +192,8 @@ def run_forward(met: Met, p: Particles, grid: Grid, receptors: list[Receptor], n
     stats = {
         "particles": p.n,
         "left_grid_frac": float(1 - p.alive.mean()),
-        "mass_left_frac": float(p.mass[p.alive].sum() / max(p.mass.sum(), 1e-30)),
+        # still in the air inside the weather grid (not deposited, vented or blown out)
+        "mass_left_frac": float(p.mass[p.alive].sum() / max(mass_start, 1e-30)),
         "contrib2": contrib2,
     }
     return out_times, conc, contrib, stats
@@ -206,7 +214,8 @@ class Sources:
 
 def run_backward(met: Met, receptors: list[Receptor], grid: Grid, arrivals: np.ndarray,
                  t_stop: float, n_per_arrival: int = 300, prm: Params | None = None,
-                 sources: Sources | None = None, n_groups: int = 0):  # fmt: skip
+                 sources: Sources | None = None, n_groups: int = 0,
+                 max_age: float | None = None):  # fmt: skip
     """Follow the air arriving at each receptor backward in time.
 
     Returns the footprint [receptor, lat, lon] in s/m³: multiply a cell's emission rate (kg/s)
@@ -261,6 +270,8 @@ def run_backward(met: Met, receptors: list[Receptor], grid: Grid, arrivals: np.n
         if new.any():
             p.z[new] = rng.random(int(new.sum())) * met.pbl(t, p.lon[new], p.lat[new])
             started |= new
+        if max_age is not None:  # air that old has lost its smoke: stop following it
+            p.alive &= ~(started & (p.release - t > max_age))
         idx = np.flatnonzero(started & p.alive)
         step(met, p, idx, t, -dt, prm, rng)
         t -= dt

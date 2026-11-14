@@ -22,7 +22,7 @@ DIR = config.DATA_DIR / "boundaries"
 
 def _bbox(geom: dict) -> tuple[float, float, float, float]:
     def points(c):
-        if isinstance(c[0], (int, float)):
+        if isinstance(c[0], int | float):
             yield c
         else:
             for part in c:

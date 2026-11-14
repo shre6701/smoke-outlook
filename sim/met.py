@@ -142,6 +142,11 @@ def from_netcdf(paths: list[Path], t0: np.datetime64 | None = None) -> Met:
     z_agl = None
     if "gh" in ds and "orog" in ds:
         above = ds.gh.transpose(*order).values - ds.orog.values[:, None]
+        # A pressure level under the terrain has no real wind (the model fills in a guess).
+        # Use the 10 m wind there, so mountains do not inject made-up flow.
+        under = above < 10.0
+        u[:, 1:] = np.where(under, u[:, :1], u[:, 1:])
+        v[:, 1:] = np.where(under, v[:, :1], v[:, 1:])
         z_agl = np.maximum(above, np.array(MIN_LEVEL_HEIGHTS_M)[None, :, None, None])
         z_agl = np.ascontiguousarray(z_agl, dtype=np.float32)
     return Met(

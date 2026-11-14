@@ -21,9 +21,32 @@ from sim.met import from_netcdf
 
 LABEL = "simulated – not yet validated"
 OUT_DIR = config.DATA_DIR / "sim"
-HORIZON_H = 72
+HORIZON_H = 72  # forecast length
+LOOKBACK_H = 72  # fires of the last 3 days are followed (smoke lives for days)
+NOWCAST_H = 24  # results are reported from this many hours before the run
+MAX_AGE_H = 96  # backward runs stop following air older than this
+FULL_TIMES = 73  # a cycle with fewer times only carries past winds, not a forecast
 AGREE = (0.67, 1.5)  # forward/backward ratio outside this = low confidence for that city
 MIN_ROW_UGM3 = 1e-4  # smaller cluster-hour contributions are not stored row by row
+
+
+def observed_now(conn, now: datetime, rec: Receptor) -> tuple[float, int, bool] | None:
+    """Median measured PM2.5 (all sources of pollution) in the receptor box over the last 3 h:
+    (µg/m³, stations, reference-grade?). Reference monitors are used when any report."""
+    row = conn.execute(
+        """
+        SELECT s.is_reference, percentile_cont(0.5) WITHIN GROUP (ORDER BY r.value),
+               count(DISTINCT (r.source, r.station_id))
+        FROM station_reading r JOIN station s USING (source, station_id)
+        WHERE r.parameter = 'pm25' AND r.observed_at > %s AND r.observed_at <= %s
+          AND r.published_at <= %s
+          AND s.geom && ST_MakeEnvelope(%s, %s, %s, %s, 4326)
+        GROUP BY s.is_reference ORDER BY s.is_reference DESC LIMIT 1
+        """,
+        (now - timedelta(hours=3), now, now, rec.lon - rec.half_box, rec.lat - rec.half_box,
+         rec.lon + rec.half_box, rec.lat + rec.half_box),
+    ).fetchone()  # fmt: skip
+    return (float(row[1]), int(row[2]), bool(row[0])) if row else None
 
 
 def weak_cities(check: dict) -> list[str]:
@@ -41,15 +64,19 @@ def ensure_schema(conn) -> None:
     conn.commit()
 
 
-def cycles(conn, now: datetime) -> list[tuple[datetime, Path]]:
-    """Stored GFS cycles published before now, newest first, whose file exists."""
+def cycles(conn, now: datetime) -> list[tuple[datetime, Path, bool]]:
+    """Stored GFS cycles published before now, newest first, whose file exists:
+    (init time, file, is a full 72 h forecast). The first one is always a full forecast."""
     rows = conn.execute(
-        "SELECT init_time, path FROM gfs_cycle WHERE published_at <= %s "
+        "SELECT init_time, path, n_times FROM gfs_cycle WHERE published_at <= %s "
         "AND init_time > %s ORDER BY init_time DESC",
-        (now, now - timedelta(hours=48)),
+        (now, now - timedelta(hours=LOOKBACK_H + 30)),
     ).fetchall()
-    rows = [(t.astimezone(UTC), config.ROOT / p) for t, p in rows]
-    return [(t, p) for t, p in rows if p.exists()]
+    rows = [(t.astimezone(UTC), config.ROOT / p, n >= FULL_TIMES) for t, p, n in rows]
+    rows = [r for r in rows if r[1].exists()]
+    while rows and not rows[0][2]:  # the newest cycle must be a full forecast
+        rows.pop(0)
+    return rows
 
 
 def _rel(path: Path) -> str:
@@ -71,7 +98,7 @@ def run(conn, now: datetime, n_particles: int = 100_000, max_members: int = 3,
     init = avail[0][0]
     t0 = np.datetime64(init.replace(tzinfo=None), "s")
     t_end = HORIZON_H * 3600.0
-    fires = fires_mod.load(conn, now - timedelta(hours=24), now)
+    fires = fires_mod.load(conn, now - timedelta(hours=LOOKBACK_H), now)
     n_events = len(fires.frp)  # zero fires is a valid day: the run then reports zero smoke
 
     grid = Grid(config.WEST, config.SOUTH, config.EAST, config.NORTH)
@@ -80,18 +107,20 @@ def run(conn, now: datetime, n_particles: int = 100_000, max_members: int = 3,
 
     # Member 0: newest cycle, with older cycles filling the hours before it starts.
     # Other members: the same fires moved by an older cycle alone (forecast uncertainty).
-    member_paths = {f"gfs_{init:%Y%m%d_%H}": [p for _, p in avail][::-1]}
-    for t, _ in avail[1:max_members]:
-        if init - t <= timedelta(hours=12):
-            member_paths[f"gfs_{t:%Y%m%d_%H}"] = [p for tt, p in avail if tt <= t][::-1]
+    member_paths = {f"gfs_{init:%Y%m%d_%H}": [p for _, p, _ in avail][::-1]}
+    older_full = [t for t, _, full in avail[1:] if full and init - t <= timedelta(hours=12)]
+    for t in older_full[: max_members - 1]:
+        member_paths[f"gfs_{t:%Y%m%d_%H}"] = [p for tt, p, _ in avail if tt <= t][::-1]
 
     mets = {name: from_netcdf(paths, t0=t0) for name, paths in member_paths.items()}
     met0 = next(iter(mets.values()))
     n_part, stats0, check = 0, {}, {}
     if n_events:
         p = make_particles(*fires_mod.particles_for(fires, t0, n_particles))
+        t_report = (np.datetime64(now.replace(tzinfo=None), "s") - t0).astype(float)
+        t_report -= NOWCAST_H * 3600.0
         out_t0, conc0, fwd, stats0 = run_forward(
-            met0, p, grid, receptors, fires.n_clusters, t_end, prm=prm
+            met0, p, grid, receptors, fires.n_clusters, t_end, prm=prm, t_out_start=t_report
         )
         stats0.pop("contrib2")
         n_part = stats0.pop("particles")
@@ -106,7 +135,8 @@ def run(conn, now: datetime, n_particles: int = 100_000, max_members: int = 3,
     for name, met in mets.items():
         arr = out_t0[out_t0 <= met.times[-1] + 1e-6]
         out = run_backward(met, receptors, grid, arr, t_stop, n_per_arrival, prm,
-                           sources=sources, n_groups=fires.n_clusters)  # fmt: skip
+                           sources=sources, n_groups=fires.n_clusters,
+                           max_age=MAX_AGE_H * 3600.0)  # fmt: skip
         foot, contrib = out if sources is not None else (out, None)
         if contrib is None:
             contrib = np.zeros((2, len(arr), len(receptors), 0), dtype=np.float32)
@@ -151,7 +181,7 @@ def run(conn, now: datetime, n_particles: int = 100_000, max_members: int = 3,
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING run_id
         """,
-        (now, init, list(member_paths), now - timedelta(hours=24), now, fires.n_detections,
+        (now, init, list(member_paths), now - timedelta(hours=LOOKBACK_H), now, fires.n_detections,
          n_events, fires.n_clusters, n_part, float(e.sum()), float(e2.sum()), c.EF_PM25_LOW,
          c.EF_PM25_CENTRAL, c.EF_PM25_HIGH, runtime, _rel(path), json.dumps(params), LABEL),
     ).fetchone()[0]  # fmt: skip
@@ -195,7 +225,7 @@ def run(conn, now: datetime, n_particles: int = 100_000, max_members: int = 3,
                                         float(total[1, a, b])))  # fmt: skip
     conn.commit()
     return {
-        "run_id": run_id, "init": init, "members": list(member_paths),
+        "run_id": run_id, "init": init, "started_at": now, "members": list(member_paths),
         "n_detections": fires.n_detections, "n_events": n_events,
         "n_clusters": fires.n_clusters, "emission_kg": float(e.sum()),
         "emission_frp_kg": float(e2.sum()), "left_grid_frac": stats0.get("left_grid_frac", 0.0),
@@ -245,6 +275,21 @@ def main() -> int:
         split = ", ".join(f"{cc} {sh:.0%}" for rec, cc, sh in shares if rec == name and sh)
         print(f"  {name:11} peak fire smoke {peak:6.1f} ug/m3 (range {lo:.1f}-{hi:.1f}) "
               f"at {when.astimezone(UTC):%d %b %H:%M} UTC | 72 h: {split or 'none'}")  # fmt: skip
+    print("  now, measured PM2.5 (all sources) against simulated fire smoke only:")
+    now_sim = dict(conn.execute(
+        "SELECT DISTINCT ON (receptor) receptor, o.pm25_ugm3 FROM sim_receptor_outlook o "
+        "JOIN sim_run r USING (run_id) WHERE run_id = %s AND valid_at <= r.started_at "
+        "ORDER BY receptor, valid_at DESC", (r["run_id"],),
+    ).fetchall())  # fmt: skip
+    for name, (lat, lon) in config.RECEPTORS.items():
+        obs = observed_now(conn, r["started_at"], Receptor(name, lat, lon))
+        sim = now_sim.get(name, 0.0)
+        if obs:
+            kind = "reference" if obs[2] else "LOW-COST"
+            print(f"    {name:11} measured {obs[0]:5.0f} ug/m3 ({obs[1]} {kind} stations) | "
+                  f"simulated fire smoke {sim:5.1f} ({sim / obs[0]:.0%} of measured)")  # fmt: skip
+        else:
+            print(f"    {name:11} no recent reading | simulated fire smoke {sim:5.1f}")
     print(f"  self-check, forward/backward dose per city (1.0 = agree): {r['check']}")
     weak = weak_cities(r["check"])
     if weak:

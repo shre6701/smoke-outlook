@@ -38,7 +38,7 @@ def parse_csv(text: str, source: str) -> list[dict]:
     return rows
 
 
-def ingest(conn, days: int = 2) -> tuple[str, int, str]:
+def ingest(conn, days: int = 4) -> tuple[str, int, str]:
     key = os.getenv("FIRMS_MAP_KEY")
     if not key:
         return "skipped", 0, "FIRMS_MAP_KEY not set"
