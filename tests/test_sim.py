@@ -132,7 +132,8 @@ def test_emission_arithmetic_and_particle_mass():
     t0 = np.datetime64("2026-11-14T12:00:00", "s")
     f = Fires(
         cluster=np.array([0, 0, 1]), lon=np.array([75.0, 75.01, 76.0]), lat=np.full(3, 30.0),
-        observed=t0 + np.array([-3600, 0, 7200]).astype("timedelta64[s]"), frp=np.array([1.0, 3.0, 20.0]),
+        observed=t0 + np.array([-3600, 0, 7200]).astype("timedelta64[s]"),
+        frp=np.array([1.0, 3.0, 20.0]),
     )  # fmt: skip
     lon, lat, mass, release, cluster = particles_for(f, t0, 1000)
     assert mass.sum() == pytest.approx(emission_kg(f.frp).sum())
