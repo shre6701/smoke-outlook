@@ -1,0 +1,105 @@
+"""Fire detections -> fire events -> clusters -> PM2.5 emissions -> particles.
+
+Event: one fire seen during one satellite pass window. NOAA-20 and NOAA-21 pass about
+50 minutes apart and often see the same fire, so touching pixels within a 6-hour window are
+one event, sized by the satellite that saw the most pixels (no double counting).
+Cluster: events within about 5 km of each other over the whole period (PostGIS DBSCAN).
+"""
+
+from dataclasses import dataclass
+from datetime import UTC, datetime
+
+import numpy as np
+
+from sim import constants as c
+
+SQL = """
+    WITH d AS (
+        SELECT *, floor(extract(epoch FROM observed_at) / 21600) AS win
+        FROM fire_detection
+        WHERE observed_at > %(start)s AND observed_at <= %(end)s
+          AND published_at <= %(end)s AND frp_mw > 0
+    ), g AS (
+        SELECT *, ST_ClusterDBSCAN(geom, 0.004, 1) OVER (PARTITION BY win) AS grp FROM d
+    ), per_sat AS (
+        SELECT win, grp, source, count(*) AS n, sum(frp_mw) AS frp, min(observed_at) AS t,
+               sum(longitude * frp_mw) / sum(frp_mw) AS lon,
+               sum(latitude * frp_mw) / sum(frp_mw) AS lat
+        FROM g GROUP BY win, grp, source
+    ), ev AS (
+        SELECT DISTINCT ON (win, grp) lon, lat, t, frp, n
+        FROM per_sat ORDER BY win, grp, n DESC, frp DESC
+    )
+    SELECT ST_ClusterDBSCAN(ST_SetSRID(ST_MakePoint(lon, lat), 4326), 0.05, 1) OVER (),
+           lon, lat, t, frp, n,
+           (SELECT count(*) FROM d)
+    FROM ev
+"""
+
+
+def emission_area_kg(n_pixels, ef_g_per_kg: float = c.EF_PM25_CENTRAL):
+    """Method A: PM2.5 (kg) from burned area, 0.14 km² per detected pixel (FINN v2.5)."""
+    return n_pixels * c.PIXEL_AREA_M2 * c.CROP_FUEL_KG_M2 * ef_g_per_kg / 1000.0
+
+
+def emission_frp_kg(frp_mw, ef_g_per_kg: float = c.EF_PM25_CENTRAL):
+    """Method B: PM2.5 (kg) from fire radiative power (MW), assuming BURN_SECONDS of burning."""
+    return frp_mw * c.BURN_SECONDS * c.BIOMASS_KG_PER_MJ * ef_g_per_kg / 1000.0
+
+
+@dataclass
+class Fires:
+    cluster: np.ndarray  # cluster index per event, 0..n_clusters-1
+    lon: np.ndarray
+    lat: np.ndarray
+    observed: np.ndarray  # datetime64[s], first sighting in the pass window
+    frp: np.ndarray  # MW, summed over the event's pixels
+    pixels: np.ndarray  # number of 375 m pixels
+    n_detections: int = 0  # raw detections before merging the two satellites
+
+    @property
+    def n_clusters(self) -> int:
+        return int(self.cluster.max()) + 1 if len(self.cluster) else 0
+
+    @property
+    def area_kg(self):
+        return emission_area_kg(self.pixels)
+
+    @property
+    def frp_kg(self):
+        return emission_frp_kg(self.frp)
+
+
+def load(conn, start: datetime, end: datetime) -> Fires:
+    rows = conn.execute(SQL, {"start": start, "end": end}).fetchall()
+    cols = list(zip(*rows, strict=True)) if rows else [[], [], [], [], [], [], [0]]
+    naive = [t.astimezone(UTC).replace(tzinfo=None) for t in cols[3]]  # session may not be UTC
+    return Fires(
+        cluster=np.array(cols[0], dtype=np.intp), lon=np.array(cols[1], dtype=float),
+        lat=np.array(cols[2], dtype=float), observed=np.array(naive, dtype="datetime64[s]"),
+        frp=np.array(cols[4], dtype=float), pixels=np.array(cols[5], dtype=float),
+        n_detections=int(cols[6][0]),
+    )  # fmt: skip
+
+
+def particles_for(fires: Fires, t0: np.datetime64, n_total: int, n_min: int = 10, seed: int = 0):
+    """Particle arrays (lon, lat, mass_kg, release_s, cluster, mass2_kg): each event gets
+    particles in proportion to its method-A emission (at least n_min), released evenly over
+    the assumed burn. mass = method A, mass2 = method B, both with the central factor."""
+    rng = np.random.default_rng(seed)
+    e, e2 = fires.area_kg, fires.frp_kg
+    n = np.maximum(n_min, np.round(n_total * e / e.sum())).astype(int)
+    rep = np.repeat(np.arange(len(e)), n)
+    obs_s = (fires.observed - t0).astype(float)
+    release = obs_s[rep] + rng.random(len(rep)) * c.BURN_SECONDS
+    return fires.lon[rep], fires.lat[rep], (e / n)[rep], release, fires.cluster[rep], (e2 / n)[rep]
+
+
+def sources_for(fires: Fires, t0: np.datetime64):
+    from sim.engine import Sources
+
+    return Sources(
+        lon=fires.lon, lat=fires.lat, start=(fires.observed - t0).astype(float),
+        group=fires.cluster, rate=np.stack([fires.area_kg, fires.frp_kg]) / c.BURN_SECONDS,
+        duration=c.BURN_SECONDS,
+    )  # fmt: skip

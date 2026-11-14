@@ -15,13 +15,139 @@ Target machine: Windows + WSL2, 16 GB RAM, no GPU, 20-50 GB free disk.
 - Airflow is `standalone` mode (dev only). No DAGs yet.
 - Folders are empty placeholders.
 
-**Next (Stage 1)**
-- Fill `.env`: `FIRMS_MAP_KEY`, `DATAGOV_API_KEY`.
-- Live inputs: GFS byte-range subset, FIRMS, stations, CAMS → Postgres with publish + observation timestamps.
-
 **Risks to plan around**
 - Disk (20-50 GB): Docker images already take about 4 GB with Airflow. Two-season hindcast in Stage 3 must keep only subset GRIB fields for the v1 domain and delete raw files after use.
 - RAM (16 GB): don't run Kafka + Airflow + simulation together under WSL2; set a WSL memory cap if Windows gets slow.
 
+## Stage 1 — Live inputs (done, 2026-11-14)
+
+**Works** (run on the WSL2 laptop, real data)
+- One command: `uv run python -m ingest.run` (about 2.5 min for a new GFS cycle, seconds otherwise). `--every 60` repeats it hourly so station readings build a history. Each source runs alone; a failure or missing key never stops the others.
+- `uv run python -m ingest.status`: rows, newest timestamp, age and ok / STALE / EMPTY per source; exit code 1 if a required source is stale.
+- GFS: latest complete cycle from `noaa-gfs-bdp-pds`, byte-range subset (U/V at 925/850/700 hPa and 10 m, HPBL, 2 m TMP), 0–72 h hourly (73 times), cropped to the v1 domain + 1°, saved as `data/gfs/*.nc` with a catalogue row in `gfs_cycle`.
+- FIRMS VIIRS NOAA-20 + NOAA-21 NRT (last 2 days) → `fire_detection` (PostGIS points, FRP).
+- Stations via OpenAQ v3 → `station`, `station_reading`; reference vs low-cost labelled. First run: India 148 reference + 43 low-cost reporting, Pakistan 190 low-cost.
+- CAMS PM2.5 for the 4 receptors via Open-Meteo → `cams_forecast` (every fetch kept).
+- Every table has `observed_at`, `published_at`, `published_basis`, `ingested_at`. Re-running adds no duplicates.
+- data.gov.in is optional: no `DATAGOV_API_KEY` → "skipped", shown as SKIPPED in status.
+
+**Thin**
+- data.gov.in code is written from the published record layout but never run (site down, no key). Its values are stored "as published" until the unit is checked.
+- CPCB's own feed: `airquality.cpcb.gov.in` and `cpcb.nic.in` time out from this network, so no CPCB-direct fetcher was built. India live data is CPCB as mirrored by OpenAQ (fresh today, but it was stale in Oct 2026).
+- Pakistan: no reference monitor is reporting on OpenAQ right now (low-cost only). Punjab EPA is not used: the site refuses scripted access and its terms could not be read.
+- `published_at` is a real source time only for GFS (S3 Last-Modified). For FIRMS, stations and CAMS it is the time we first fetched the row.
+- GFS: 2 m TMP only (no temperature on pressure levels).
+- OpenAQ's latest-values listing repeats some entries across pages (705 listed, about 430 distinct); duplicates are dropped by key. Readings are now keyed by sensor id.
+- No real scheduler: `--every 60` is a plain loop in a terminal (Airflow is v3). No dbt tests yet.
+- uv was missing on the laptop; installed with `pip install --user uv` (needs `~/.local/bin` on PATH). Docker Desktop must be started first.
+
+**Next**
+- When data.gov.in is back: add `DATAGOV_API_KEY`, run `uv run python -m ingest.run --only datagov`, check the unit.
+
+## Stage 2 — Simulation engine (done, 2026-11-14)
+
+**Works** (live run on the laptop, real fires and real forecast winds)
+- One command: `uv run python -m sim.run`. First run: 659 detections → 292 clusters, 100,000 particles, 2 forecast-cycle members, **73 s** (budget 10 min). Runtime is stored in `sim_run.runtime_s`.
+- Forward 72 h from the fire clusters of the last 24 h: hourly gridded fire-smoke PM2.5 (0.1°, 80×100) in `data/sim/*.nc`.
+- Contribution table: `sim_contribution` (cluster × receptor × hour × member); `sim_cluster` (centre, FRP, emission); view `sim_receptor_outlook` with low/high range.
+- Backward run from the 4 receptors: footprint per receptor (where its air comes from), in the same NetCDF.
+- Uncertainty: low/high emission factor × neighbouring forecast cycles (`ingest.run` now also keeps the previous cycle).
+- Physics tests first, 12 of them: zero wind, uniform wind, boundary-layer cap, night residual layer, deposition decay, mass/volume, downwind-only contribution, backward footprint upwind, weather stitching.
+- Point-in-time: a run uses only fires and GFS cycles with `published_at` before its start.
+
+**Thin**
+- **Absolute values are far too low**: peak fire smoke at the receptors is about 0.1 µg/m³, against tens to hundreds observed in this season. Cause is emissions, not transport: 33 t PM2.5/day from satellite FRP with "1 detection = 1 hour of burning". Small, short crop fires are mostly missed between satellite passes. **Shares and rankings are usable; absolute µg/m³ are not** until Stage 3 fits a scale factor against observations.
+- Only fires already seen are released (no "same fires again tomorrow"), so days 2–3 are under-supplied.
+- Wind level heights use the standard atmosphere as height above ground: fine on the plains, wrong in the hills. No terrain.
+- No wet deposition (no rain field ingested), no chemistry (secondary particles ignored).
+- Horizontal mixing (1000 m²/s) and the 1-hour burn are assumptions, not cited values. The dry-deposition and Andreae (2019) numbers should be checked against the sources before publishing.
+- 65% of particles leave the weather grid within 72 h (domain + 1° is small); returning smoke is lost.
+- Backward run ignores deposition. Clusters have no country/region tag yet.
+- Ensemble: 2 cycles only (3 once more cycles are stored).
+
+### Test pass after Stage 2 (2026-11-14)
+
+**Checked**
+- 35 automated tests pass (`uv run pytest`, about 35 s). The 11 database tests run on a throwaway database that is created and dropped each time; real data is never touched.
+- Covered: schema applied twice; upgrade of an older table; FIRMS and OpenAQ ingest idempotent, duplicates and dead sensors dropped, lon/lat order; an error page is a failure, not "no fires"; one failing source does not stop the rest and never prints a key; status STALE/EMPTY flags and exit code; a full simulation run in both UTC and India time zones, incl. point-in-time (fires and forecast cycles published after the run start are ignored).
+- Forward and backward runs agree within 15% for a steady source (reciprocity). Same seed gives identical output.
+- On the real data: random noise 3–8% per city at 100,000 particles; 400,000 particles change results by under 4%; halving the time step changes them by up to 11%. 25,000 particles is too few (up to 32% off).
+- Real inputs are physically sensible: Delhi boundary layer about 100 m at night and 2,100 m mid-afternoon; winds up to 16 m/s; no negative or over-range station values.
+
+**Fixed during the pass**
+- Times read from Postgres were assumed to be UTC; a non-UTC session would have shifted fires by hours.
+- Low end of the range ignored a member with zero smoke; hours a member does not cover are no longer counted as zero either (new table `sim_receptor_hourly`).
+- `sim.run` split into a testable `run()`.
+
+**Still weak**
+- The top-10 cluster ranking per city is only partly stable between random seeds (6–8 of 10 shared). Rank small contributors with care, or use more particles (400,000 takes about 2.5 min per member).
+- 161 fire pairs are the same fire seen by both satellites within 90 minutes; each counts as its own hour of burning.
+- Stations median 141 µg/m³ and CAMS 62–77, against simulated fire smoke of about 0.1: the emission scale problem above, confirmed.
+- Not tested: the data.gov.in fetcher against the real site; GFS download failure half-way; behaviour with zero fires in season; anything on a second machine.
+
+### Improvement round (2026-11-14, branch `stage-2c-boundaries-emissions`)
+
+**Added**
+- **Boundaries:** Natural Earth (public domain) countries, states/provinces and disputed areas in table `boundary`; SQL function `place_of(point)`. A point in a disputed area is tagged `disputed` with the area's name, on every side, never as either country. Each fire cluster now has `country` and `region`; view `sim_source_share` gives the daily share per city by source (UTC days, forecast hours only).
+- **Emissions, two cited methods side by side:** A) burned area, 0.14 km² per detected pixel × 902 g/m² crop fuel (FINN v2.5) — central and high; B) fire power × 1 h (Wooster 2005) — low. First run: 562 t PM2.5 (range 28–1,056 t). The range is honest: a factor of about 40.
+- **No double counting:** the same fire seen by NOAA-20 and NOAA-21 in one pass window is one event, sized by the satellite that saw more pixels (659 detections → 555 events).
+- **City numbers from backward runs:** air is followed back from each city and meets the fires on the way. Top-10 cluster ranking is now 6–10 of 10 stable between seeds (was 3–9), noise 2–6%.
+- **Self-check in every run:** forward and backward doses are compared per city; outside 0.67–1.5 the city is printed and stored as low confidence. Now: Delhi 0.98, Lahore 1.10, Amritsar 0.87, **Chandigarh 0.48 (low confidence)**.
+- **Divergence correction** for backward runs (found by the self-check: without it the two methods differed by up to 2× in real winds).
+- **True level heights:** GFS geopotential height and terrain are ingested; 925 hPa is 570 m above the Punjab plain, not the 762 m assumed before.
+- **Wider weather area** (domain + 4°, was 1°): particles lost from the grid fall from 65% to 42%. No extra download.
+- **Zero-fire day** gives a zero run, not an error. Outlook peaks are reported for forecast hours only.
+- **Status** now watches India *reference* stations separately, so a stale CPCB mirror cannot hide behind fresh low-cost sensors.
+- 42 tests (was 35), incl. disputed class, two-satellite merge, terrain heights, spreading wind, daily shares.
+
+**Station alternatives to data.gov.in (checked, none added)**
+- data.gov.in and CPCB's own sites: still down / unreachable from this network.
+- WAQI (aqicn.org): terms forbid redistributing cached or archived data, ask for notice before public use, and the feed is an index, not concentrations. Not usable for validation or a stored history.
+- XKDR database: an archive (last export 2026-09-30), not live. Still right for Stage 3.
+- OpenAQ stays the live source (148 India reference stations reporting).
+
+**Still weak**
+- Absolute smoke is still low: peaks of 1–2 µg/m³ at the cities against station medians near 140 (all sources). Only the last 24 h of fires are released and no fitted scale is used. Stage 3 decides.
+- Chandigarh, next to the mountains: forward and backward disagree by 2×.
+- Shares rest on fires seen in the last 24 h only; they are simulated and unvalidated, in both directions.
+- Burn fraction for method A is assumed to be 100% (not read from the FINN paper). The 1-hour burn (method B) and horizontal mixing remain assumptions.
+- Not built (needs your decision, touches the "no synthetic data" rule): repeating today's fires on forecast days 2–3.
+
+### Hardening round before merge (2026-11-14, branch `stage-2d-history-hardening`)
+
+**Added**
+- **Three days of fires with real past winds.** Ingest keeps the first hours of every GFS cycle of the last 72 h (11 small files, about 1 GB download once, then one per new cycle) and 4 days of FIRMS. The run follows fires of the last 72 h and reports from 24 h before the run to 72 h ahead. Today: 2,277 detections → 1,733 events → 679 clusters, about 2,000 t PM2.5 (range 106–3,733 t).
+- **Venting rule.** Where wind piles air up, the surplus (with its smoke) leaves through the top of the boundary layer; where wind spreads, clean air dilutes. This removed a false 9.8 µg/m³ spike at Chandigarh and makes forward and backward runs consistent.
+- Pressure levels under the terrain use the surface wind (no made-up mountain flow).
+- **Measured vs simulated line** in every run (measured = all pollution sources; low-cost sensors labelled).
+- GFS files are written atomically; one missing old cycle no longer fails the ingest.
+- pre-commit hooks installed on this machine (they had never run here; they caught one style issue).
+
+**Tested**
+- 46 automated tests pass, here and in a clean clone with a fresh environment (stand-in for a second machine).
+- New tests: failed weather download leaves no half-written cycle and does not stop other sources; data.gov.in fetcher with paging (against a stand-in server, still never against the real site); past-wind cycles are used but never count as forecast members; piling-up wind; zero-fire day.
+- Real ingest into a brand-new empty database works; the simulation then says clearly that weather is missing.
+- On real data: country shares differ by at most 1 point between random seeds; city totals vary 0–7%; halving the time step changes totals by 0–10%; 7–9 of the top-10 clusters are stable.
+- Forward/backward self-check: Delhi 0.92, Lahore 1.13, Amritsar 1.00, Chandigarh 0.62 (still flagged low confidence; its India share is 19% backward vs 29% forward).
+
+**Still weak**
+- **Simulated fire smoke is 0–3% of measured PM2.5** at the four cities right now (e.g. Delhi 0.1 of 201 µg/m³). Measured values include all sources, so this is not a skill score, but published stubble shares for mid-November are usually far higher. Treat absolute values as too low until Stage 3; shares and rankings are the usable output.
+- Runtime is now about 3.5 min (was 2 min) because of the 3-day history; budget is 10 min.
+- 95% of the smoke has left the weather grid, deposited or vented after 72 h; smoke that would return from outside is lost.
+- GFS files are never pruned (about 80 MB per day).
+- Still assumptions, not cited: 100% burn of fuel in a detected pixel, 1-hour burn (low method), horizontal mixing rate.
+- Not built, awaiting your decision: repeating today's fires on forecast days 2–3.
+
+**Next (Stage 2b)**
+- Live map, using `sim_source_share`, `sim_receptor_outlook`, `sim_cluster` and `data/sim/*.nc`. Show the low-confidence flag.
+- Label everything "simulated – not yet validated"; show shares, not absolute µg/m³, until Stage 3.
+
 ## Later
+- Ingest GFS geopotential height and terrain so wind levels sit at true height above ground.
+- Ingest GFS rain rate for wet deposition.
+- Persistence emissions (repeat today's fires on forecast days 2–3), clearly labelled.
+- ISRO INSAT-3D/3DR/3DS aerosol optical depth (MOSDAC, 30 min, both countries) as an independent check on where the simulated plume is. Column haze, not ground PM2.5, so not a station substitute. Checked 2026-11-14: free with registration; general accounts may get data 3 days late (live needs a privileged account or standing order); redistribution/display terms not stated on the pages read (read `mosdac-data-guidelines` PDF first). NavIC is navigation only: no air-quality data.
+- Pakistan reference data: ask Punjab EPA for permission or a feed; US Embassy Lahore/Islamabad monitors show no data on OpenAQ after March 2025.
+- Bias-correct Lahore low-cost sensors against the embassy history (Stage 3 topic).
+- CPCB-direct fetcher once `airquality.cpcb.gov.in` is reachable and its terms are read.
 - (ideas only; not built)
