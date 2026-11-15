@@ -101,9 +101,6 @@ def freshness(conn) -> list[dict]:
         ("India reference stations", "stations_in",
          "SELECT max(r.observed_at) FROM station_reading r JOIN station s USING (source, "
          "station_id) WHERE s.country = 'IN' AND s.is_reference"),
-        ("Pakistan stations (low-cost)", "stations_pk",
-         "SELECT max(r.observed_at) FROM station_reading r JOIN station s USING (source, "
-         "station_id) WHERE s.country = 'PK'"),
     ]  # fmt: skip
     out = []
     for label, key, sql in checks:
@@ -423,33 +420,39 @@ def footprint(run_id: int, name: str):
 
 @app.get("/api/ledger/{run_id}")
 def ledger(run_id: int):
-    """Daily share of each city's simulated fire smoke by source country, both directions in
-    one table, with the spread across forecast members. Observed fires only; UTC days."""
+    """Daily share of each Indian city's simulated fire smoke by source: each Indian state and
+    each neighbouring country in one table, same method for both, with the spread across
+    forecast members. Inflow to Indian cities only. Observed fires only; UTC days."""
     with db.connect() as conn:
         run = run_row(conn, run_id)
         rows = conn.execute(
             """
             WITH d AS (
                 SELECT k.member, k.receptor, (k.valid_at AT TIME ZONE 'UTC')::date AS day,
-                       c.country, sum(k.pm25_ugm3) AS dose
+                       c.country,
+                       CASE WHEN c.country = 'IN' THEN coalesce(c.region, 'state unknown')
+                            ELSE '' END AS state,
+                       sum(k.pm25_ugm3) AS dose
                 FROM sim_contribution k JOIN sim_cluster c USING (run_id, cluster_id)
                 WHERE k.run_id = %(run)s AND k.valid_at >= %(start)s AND k.pm25_ugm3 > 0
-                GROUP BY 1, 2, 3, 4
+                  AND k.receptor = ANY(%(cities)s)
+                GROUP BY 1, 2, 3, 4, 5
             ), s AS (
                 SELECT *, dose / sum(dose) OVER (PARTITION BY member, receptor, day) AS share
                 FROM d
             )
             SELECT receptor, day, country,
                    max(share) FILTER (WHERE member = %(m0)s), min(share), max(share),
-                   count(*), max(dose) FILTER (WHERE member = %(m0)s)
-            FROM s GROUP BY 1, 2, 3 ORDER BY 1, 2, 4 DESC NULLS LAST
+                   count(*), max(dose) FILTER (WHERE member = %(m0)s), state
+            FROM s GROUP BY receptor, day, country, state ORDER BY 1, 2, 4 DESC NULLS LAST
             """,
-            {"run": run_id, "start": run["started_at"], "m0": run["members"][0]},
-        ).fetchall()
+            {"run": run_id, "start": run["started_at"], "m0": run["members"][0],
+             "cities": list(config.RECEPTORS)},
+        ).fetchall()  # fmt: skip
         regions = conn.execute(
             "SELECT receptor, country, region, sum(dose_ugm3_h) FROM sim_source_share "
-            "WHERE run_id = %s GROUP BY 1, 2, 3 ORDER BY 1, 4 DESC",
-            (run_id,),
+            "WHERE run_id = %s AND receptor = ANY(%s) GROUP BY 1, 2, 3 ORDER BY 1, 4 DESC",
+            (run_id, list(config.RECEPTORS)),
         ).fetchall()
         skills = skill(conn)
         label = label_for(conn, run)
@@ -463,10 +466,13 @@ def ledger(run_id: int):
         "revision_note": "± = how much this share typically changed between the forecast made "
                          "a day ahead and the one made on the day, in hindcasts of 2024 and 2025.",
         "note": "Share of simulated FIRE smoke only (not of all pollution), from fires seen in "
-                "the last 3 days. Disputed areas are their own class. Days are UTC days. "
+                "the last 3 days, split by Indian state and by neighbouring country with the "
+                "same method. Smoke reaching Indian cities only; smoke leaving India is not "
+                "computed. Shares from abroad cannot be checked against stations there. "
+                "Disputed areas are their own class. Days are UTC days. "
                 "Range = spread across forecast runs.",
         "rows": [
-            {"receptor": r[0], "day": r[1].isoformat(), "source": r[2],
+            {"receptor": r[0], "day": r[1].isoformat(), "source": r[2], "state": r[8] or None,
              "share": round(r[3], 3) if r[3] is not None else 0.0,
              # a source missing from some forecast run had a zero share there
              "share_min": round(r[4], 3) if r[6] == n_members else 0.0,
@@ -482,7 +488,8 @@ def ledger(run_id: int):
 @app.get("/api/targeting/{run_id}")
 def targeting(run_id: int, hours: int = 48, limit: int = 20):
     """Fire clusters burning now, ranked by simulated population-weighted exposure over the
-    next `hours` hours at the tracked cities. Observed fires only, any country, same rule."""
+    next `hours` hours at the tracked Indian cities. Observed fires only; fires in India and
+    abroad are ranked by the same rule."""
     with db.connect() as conn:
         run = run_row(conn, run_id)
         rows = conn.execute(
@@ -492,6 +499,7 @@ def targeting(run_id: int, hours: int = 48, limit: int = 20):
                 SELECT k.member, k.cluster_id, k.receptor, sum(k.pm25_ugm3) AS dose
                 FROM sim_contribution k
                 WHERE k.run_id = %(run)s AND k.valid_at >= %(start)s AND k.valid_at < %(end)s
+                  AND k.receptor = ANY(%(cities)s)
                 GROUP BY 1, 2, 3
             ), e AS (
                 SELECT member, cluster_id, sum(dose * pop) AS exposure,
@@ -511,13 +519,15 @@ def targeting(run_id: int, hours: int = 48, limit: int = 20):
             ORDER BY share DESC NULLS LAST LIMIT %(limit)s
             """,
             {"run": run_id, "start": run["started_at"], "m0": run["members"][0],
-             "end": run["started_at"] + timedelta(hours=hours), "limit": limit},
+             "end": run["started_at"] + timedelta(hours=hours), "limit": limit,
+             "cities": list(config.RECEPTORS)},
         ).fetchall()  # fmt: skip
     n_members = len(run["members"])
     return {
         "label": run["label"], "hours": hours,
-        "note": "Ranked by simulated fire smoke x city population at the tracked cities "
-                "(Delhi, Lahore, Chandigarh, Amritsar). Shares are of that total. "
+        "note": "Ranked by simulated fire smoke x city population at the tracked Indian "
+                f"cities ({', '.join(config.RECEPTORS)}). Fires in India and abroad are ranked "
+                "by the same rule. Shares are of that total. "
                 "Range = spread across forecast runs. Small shares are not ranked reliably.",
         "rows": [
             {"rank": i + 1, "id": r[0], "country": r[1], "region": r[2], "lon": float(r[3]),

@@ -33,14 +33,13 @@ SPIKE_QUANTILE = 0.75  # the top quarter of measured day-to-day rises are "spike
 # A city-season is "useful" for smoke arrival when, for the first 24 h:
 VERDICT_MIN_AUC = 0.65  # simulated rises pick out measured spikes at least this well
 VERDICT_CI_ABOVE = 0.0  # and the 90% interval of the change correlation is above zero
-COUNTRY = {"Delhi": "IN", "Chandigarh": "IN", "Amritsar": "IN", "Lahore": "PK"}
 DSS_FILE = config.ROOT / "docs" / "ref" / "dss_delhi_stubble_share.csv"
 REPORT = config.ROOT / "docs" / "validation.md"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS validation_skill (
     computed_at timestamptz NOT NULL DEFAULT now(),
-    scope       text NOT NULL,      -- 'city' | 'country' | 'ledger' | 'scale' | 'dss'
+    scope       text NOT NULL,      -- 'city' | 'region' | 'ledger' | 'scale' | 'dss'
     name        text NOT NULL,      -- city, country code, ...
     season      integer NOT NULL,   -- 0 = both seasons together
     lead_day    integer NOT NULL,   -- 0 = not by lead
@@ -153,6 +152,8 @@ def load_series(conn, season: int):
         (t0, t1),
     ).fetchall()
     for city, hour, is_ref, med, k, n_cens in rows:
+        if city not in obs:  # rows of a city that is no longer a receptor
+            continue
         i = hours_between(t0, hour.astimezone(UTC))
         obs[city][i], ref[city][i], nst[city][i] = med, is_ref, k
         cens[city] += int(n_cens)
@@ -161,7 +162,8 @@ def load_series(conn, season: int):
         "SELECT receptor, hour_utc, pm25_ugm3 FROM archive_cams_hourly "
         "WHERE hour_utc >= %s AND hour_utc < %s", (t0, t1),
     ).fetchall():  # fmt: skip
-        cams[city][hours_between(t0, hour.astimezone(UTC))] = v
+        if city in cams:
+            cams[city][hours_between(t0, hour.astimezone(UTC))] = v
     return t0, obs, ref, nst, cens, cams
 
 
@@ -176,6 +178,8 @@ def load_runs(conn, season: int, t0: datetime, n: int):
         """,
         (season,),
     ).fetchall():
+        if city not in out:
+            continue
         key = hours_between(t0, run_at.astimezone(UTC))
         run = out[city].setdefault(key, {k: np.full(n, np.nan) for k in ("seen", "frp", "whatif")})
         i = hours_between(t0, valid.astimezone(UTC))
@@ -435,9 +439,6 @@ def report(res: dict) -> str:
         L.append(f"| {city} | {season} | {s['hours']} | {kind} | {s['median_stations']:.0f} |")
     L += [
         "",
-        "Lahore has one reference monitor in 2024 and only low-cost sensors in 2025, so the "
-        "Pakistan numbers rest on weaker measurements than the India numbers.",
-        "",
         "## Skill per city (first 24 hours after the run)",
         "",
         "Change correlation: rank correlation between the simulated and the measured change "
@@ -484,15 +485,19 @@ def report(res: dict) -> str:
             )
     L += [
         "",
-        "## Skill per country",
+        "## Skill per region",
         "",
-        "Mean of the city scores (India: Delhi, Chandigarh, Amritsar; Pakistan: Lahore), "
-        "first 24 hours.",
+        "Mean of the city scores in each region ("
+        + "; ".join(
+            f"{reg}: {', '.join(c for c in config.RECEPTORS if config.REGION[c] == reg)}"
+            for reg in dict.fromkeys(config.REGION.values())
+        )
+        + "), first 24 hours. Receptors are Indian cities only.",
         "",
-        "| Country | Season | Change corr. | Spike AUC | Cities useful |",
+        "| Region | Season | Change corr. | Spike AUC | Cities useful |",
         "|---|---|---|---|---|",
     ]
-    for (code, season), m in country_metrics(res).items():
+    for (code, season), m in region_metrics(res).items():
         L.append(f"| {code} | {season} | {_f(m['r_change'])} | {_f(m['auc_spike'])} | "
                  f"{m['n_useful']} of {m['n_cities']} |")  # fmt: skip
     L += [
@@ -553,12 +558,13 @@ def report(res: dict) -> str:
         )
     L += [
         "",
-        "## Cross-border ledger: how much a share moves",
+        "## Smoke source ledger: how much a share moves",
         "",
-        "For the same 24 hours, the Pakistan-side share (and so the India-side share) of a "
-        "city's simulated fire smoke is computed twice: by the run of that day and by the run "
-        "one day earlier. The difference is a measure of forecast uncertainty in the ledger. "
-        "Shares do not depend on the emission scale.",
+        "For the same 24 hours, the share of an Indian city's simulated fire smoke that comes "
+        "from fires in Pakistan (the only neighbouring country inside the v1 domain; the rest "
+        "is from Indian states and disputed areas) is computed twice: by the run of that day "
+        "and by the run one day earlier. The difference is a measure of forecast uncertainty "
+        "in the ledger. Shares do not depend on the emission scale.",
         "",
         "| City | Season | Days | Typical change (median, points) | 9 days in 10 below |",
         "|---|---|---|---|---|",
@@ -574,8 +580,9 @@ def report(res: dict) -> str:
         "- Archive weather is stored every 3 hours (the live system uses every hour).",
         "- Archive fires are the reprocessed FIRMS product with an assumed 3-hour delay; the "
         "live feed of the day may have differed slightly.",
-        "- Two seasons, one run per day, four cities. Scores for one city-season rest on about "
-        "60 days that are not independent.",
+        "- Two seasons, one run per day, three cities, all in the north. Shares from fires "
+        "abroad cannot be checked against stations in the source area.",
+        "- Scores for one city-season rest on about 60 days that are not independent.",
         "- Measured PM2.5 includes fireworks (Diwali: 31 Oct – 1 Nov 2024, 20–21 Oct 2025), "
         "traffic, industry and dust. None of these are in the model.",
         "- Sources: OpenAQ (CPCB, US diplomatic posts via AirNow, low-cost networks); India Air "
@@ -586,14 +593,14 @@ def report(res: dict) -> str:
     return "\n".join(L)
 
 
-def country_metrics(res: dict) -> dict:
+def region_metrics(res: dict) -> dict:
     out = {}
     for season in SEASONS:
-        for code in ("IN", "PK"):
+        for code in dict.fromkeys(config.REGION.values()):
             ms = [
                 res["city"][(city, season, 1)]
                 for city in config.RECEPTORS
-                if COUNTRY[city] == code and "r_change" in res["city"][(city, season, 1)]
+                if config.REGION[city] == code and "r_change" in res["city"][(city, season, 1)]
             ]
             if ms:
                 out[(code, season)] = {
@@ -628,8 +635,8 @@ def store(conn, res: dict) -> None:
         if lead == 1:
             m = {**m, **{f"stations_{k}": v for k, v in res["stations"][(city, season)].items()}}
         conn.execute(ins, ("city", city, season, lead, _json(m)))
-    for (code, season), m in country_metrics(res).items():
-        conn.execute(ins, ("country", code, season, 1, _json(m)))
+    for (code, season), m in region_metrics(res).items():
+        conn.execute(ins, ("region", code, season, 1, _json(m)))
     for (city, season), m in res["scale"].items():
         conn.execute(ins, ("scale", city, season, 0, _json(m)))
     for season, by_city in res["ledger"].items():

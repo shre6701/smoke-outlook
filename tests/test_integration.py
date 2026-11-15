@@ -100,8 +100,10 @@ def test_openaq_ingest_labels_stations_and_dedupes(testdb, monkeypatch):
     locs = [
         {"id": 1, "name": "ref", "isMonitor": True, "country": {"code": "IN"},
          "provider": {"name": "CPCB"}, "coordinates": {"latitude": 28.6, "longitude": 77.2}},
-        {"id": 2, "name": "lowcost", "isMonitor": False, "country": {"code": "PK"},
-         "provider": {"name": "AirGradient"}, "coordinates": {"latitude": 31.5, "longitude": 74.3}},
+        {"id": 2, "name": "lowcost", "isMonitor": False, "country": {"code": "IN"},
+         "provider": {"name": "AirGradient"}, "coordinates": {"latitude": 31.6, "longitude": 74.9}},
+        {"id": 3, "name": "abroad", "isMonitor": True, "country": {"code": "PK"},
+         "provider": {"name": "x"}, "coordinates": {"latitude": 31.5, "longitude": 74.3}},
     ]  # fmt: skip
 
     def item(loc, sensor, age_h, value):
@@ -112,6 +114,7 @@ def test_openaq_ingest_labels_stations_and_dedupes(testdb, monkeypatch):
         item(1, 11, 1, 150.0), item(1, 11, 1, 150.0),  # the API repeats entries across pages
         item(1, 12, 1, 140.0),  # second sensor at the same station
         item(2, 21, 1, 90.0), item(2, 21, 24 * 30, 80.0),  # one fresh, one dead
+        item(3, 31, 1, 70.0),  # station abroad: not ingested
         item(99, 9, 1, 10.0),  # station outside the domain list
     ]  # fmt: skip
 
@@ -126,7 +129,7 @@ def test_openaq_ingest_labels_stations_and_dedupes(testdb, monkeypatch):
         "SELECT s.country, s.is_reference, count(*) FROM station_reading r JOIN station s "
         "USING (source, station_id) GROUP BY 1, 2 ORDER BY 1"
     ).fetchall()
-    assert rows == [("IN", True, 2), ("PK", False, 1)]
+    assert rows == [("IN", False, 1), ("IN", True, 2)]
 
 
 def test_one_failing_source_does_not_stop_the_others_and_hides_keys(testdb, monkeypatch, capsys):
@@ -163,7 +166,7 @@ def test_status_flags_stale_and_empty_and_sets_exit_code(testdb, monkeypatch, ca
         f"latitude, longitude, geom) VALUES ('s', %s, %s, 'first_seen', 28, 77, {pt})",
         (now - timedelta(hours=30), now),
     )
-    for sid, country, age in (("1", "IN", 1), ("2", "PK", 1)):
+    for sid, country, age in (("1", "IN", 1),):
         conn.execute(f"INSERT INTO station VALUES ('openaq', %s, 'n', %s, 'p', true, {pt})",
                      (sid, country))  # fmt: skip
         conn.execute(
@@ -189,7 +192,7 @@ def test_status_flags_stale_and_empty_and_sets_exit_code(testdb, monkeypatch, ca
         return next(ln for ln in lines if ln.startswith(label))
 
     assert "STALE" in line("FIRMS fires")  # newest fire is 30 h old, limit 24 h
-    for label in ("GFS forecast", "India reference stations", "Pakistan stations", "CAMS"):
+    for label in ("GFS forecast", "India reference stations", "CAMS"):
         assert " ok " in line(label)
     conn.execute("UPDATE fire_detection SET observed_at = now() - interval '2 hours'")
     conn.commit()

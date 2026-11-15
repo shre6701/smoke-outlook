@@ -33,11 +33,12 @@ def test_openaq_reading_drops_old_and_bad():
 
 def test_openaq_station_labels_low_cost():
     loc = {
-        "id": 7, "name": "x", "isMonitor": False, "country": {"code": "PK"},
-        "provider": {"name": "AirGradient"}, "coordinates": {"latitude": 31.5, "longitude": 74.3},
+        "id": 7, "name": "x", "isMonitor": False, "country": {"code": "IN"},
+        "provider": {"name": "AirGradient"}, "coordinates": {"latitude": 31.6, "longitude": 74.9},
     }  # fmt: skip
     s = stations.openaq_station(loc)
-    assert s["is_reference"] is False and s["country"] == "PK"
+    assert s["is_reference"] is False and s["country"] == "IN"
+    assert stations.openaq_station({**loc, "country": {"code": "PK"}}) is None  # India only
     loc["coordinates"] = {"latitude": 10.0, "longitude": 74.3}
     assert stations.openaq_station(loc) is None
 

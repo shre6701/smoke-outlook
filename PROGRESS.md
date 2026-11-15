@@ -2,6 +2,14 @@
 
 Target machine: Windows + WSL2, 16 GB RAM, no GPU, 20-50 GB free disk.
 
+## Scope change (15 Nov 2026)
+- Project is now India-centric: Indian receptors only, inflow ledger by Indian state and neighbouring country, regions phased North → East → West/South. See SPEC §0 and DECISIONS.md.
+- **Code ported (branch `india-centric`):** Lahore is no longer a receptor; stations abroad are not ingested; the ledger API and map panel split each city's smoke by Indian state and neighbouring country, with an "inflow only" note; targeting ranks by exposure in Indian cities; validation reports per city and per region (North). Old Lahore rows in an existing database are ignored, not deleted.
+- **Result docs:** Lahore rows removed from README and `docs/validation.md` by hand; summary ranges recomputed from the Indian-city rows. Nothing was re-run. README map screenshots still show the old four-city view.
+- **Thin:** no Postgres on this laptop session (Docker not reachable from WSL), so 33 database tests were skipped; ruff, the JS syntax check and the 40 tests that need no database pass. Run `uv run pytest` with Docker up before merging.
+- **Not done yet:** Lucknow (domain to 82°E, station archive, hindcasts). Hindcast ledger rows are stored per country only, so the "how much a share moves" figure is still the Pakistan-fire share, not per state.
+- **Next:** improve the model and re-score (list under Stage 3). This needs Docker, the keys in `.env` (FIRMS, OpenAQ, XKDR) and a full re-run of the 122 hindcasts (about 12 h), because the hindcast database was built in a cloud session and is not on this laptop. Lucknow can join that re-run at little extra cost.
+
 ## Stage 0 — Setup (done)
 
 **Works**
@@ -229,3 +237,5 @@ Target machine: Windows + WSL2, 16 GB RAM, no GPU, 20-50 GB free disk.
 - CPCB-direct fetcher once `airquality.cpcb.gov.in` is reachable and its terms are read.
 - Fire type is now Stage 3b. Alerts to authorities (asked 2026-11-15). Possible: label each fire "likely crop-residue burning" from land cover (cropland), harvest calendar, size and time of day, and send the ranked list to district officials (this is the v2 targeting brief, SPEC §2). Not possible from satellites: who lit a fire or why, so no "deliberate" label and no blame wording. Needs first: a land-cover mask, better arrival skill than Stage 3 found, and a named, consenting recipient for any automatic message.
 - (ideas only; not built)
+- Dust (Thar, Pakistan, Middle East) is likely the main cross-border input for Mumbai and the west in the pre-monsoon; the model is fire smoke only, so it is not covered.
+- Smoke leaving India (to Lahore, Dhaka, Kathmandu) could come back as a separate two-way view.

@@ -26,11 +26,6 @@ CHECKS = [
         "AND s.is_reference", "observed",
     ),
     (
-        "Pakistan stations (low-cost)", "stations_pk",
-        "SELECT count(*), max(r.observed_at) FROM station_reading r JOIN station s "
-        "USING (source, station_id) WHERE r.source = 'openaq' AND s.country = 'PK'", "observed",
-    ),
-    (
         "India stations (data.gov.in)", "datagov",
         "SELECT count(*), max(observed_at) FROM station_reading WHERE source = 'datagov'",
         "observed",

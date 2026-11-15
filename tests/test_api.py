@@ -25,7 +25,7 @@ def client(testdb, tmp_path):
         )  # fmt: skip
     for name, pop, lon, lat in (
         ("Delhi", 15_000_000, 77.21, 28.61),
-        ("Lahore", 6_000_000, 74.34, 31.55),
+        ("Chandigarh", 1_000_000, 76.78, 30.73),
     ):
         conn.execute(
             "INSERT INTO place (name, pop_max, geom) VALUES (%s, %s, "
@@ -75,6 +75,12 @@ def test_tables_are_consistent_and_labelled(client):
         by_day.setdefault((r["receptor"], r["day"]), []).append(r["share"])
         assert r["share_min"] <= r["share"] + 1e-9 <= r["share_max"] + 2e-9
     assert by_day and all(abs(sum(v) - 1) < 0.01 for v in by_day.values())
+    # India-centric: Indian receptors only; Indian sources carry a state, foreign ones do not
+    assert {r["receptor"] for r in led["rows"]} <= {"Delhi", "Chandigarh", "Amritsar"}
+    assert {r["source"] for r in led["rows"]} == {"IN", "PK"}
+    assert all((r["state"] is not None) == (r["source"] == "IN") for r in led["rows"])
+    assert "leaving India is not" in led["note"]
+    assert client.get(f"/api/receptor/{rid}/Lahore").status_code == 404
     tgt = client.get(f"/api/targeting/{rid}").json()
     shares = [r["share"] for r in tgt["rows"]]
     assert shares == sorted(shares, reverse=True) and abs(sum(shares) - 1) < 0.01
@@ -141,8 +147,9 @@ def test_labels_say_not_validated_until_skill_exists_then_show_it_per_city(clien
     good = {"n_days": 60, "verdict": "useful", "r_change": 0.5, "auc_spike": 0.8,
             "stations_reference_share": 1.0}  # fmt: skip
     weak = {**good, "verdict": "not reliable here", "auc_spike": 0.55}
+    other = "Chandigarh"
     for name, season, metrics in (("Delhi", 2024, good), ("Delhi", 2025, good),
-                                  ("Lahore", 2024, good), ("Lahore", 2025, weak)):  # fmt: skip
+                                  (other, 2024, good), (other, 2025, weak)):  # fmt: skip
         conn.execute(ins, ("city", name, season, 1, json.dumps(metrics)))
     conn.execute(ins, ("ledger", "Delhi", 2024, 0, '{"median_points": 6, "p90_points": 20}'))
     conn.execute(ins, ("ledger", "Delhi", 2025, 0, '{"median_points": 9, "p90_points": 15}'))
@@ -152,9 +159,9 @@ def test_labels_say_not_validated_until_skill_exists_then_show_it_per_city(clien
     assert m["validated"] and "not yet validated" not in m["label"] and "simulated" in m["label"]
     skill = {r["name"]: r["skill"] for r in m["receptors"]}
     assert skill["Delhi"]["verdict"] == "useful"
-    assert skill["Lahore"]["verdict"] == "not reliable here"  # one weak season is enough
+    assert skill["Chandigarh"]["verdict"] == "not reliable here"  # one weak season is enough
     rid = m["run_id"]
-    assert client.get(f"/api/receptor/{rid}/Lahore").json()["skill"]["verdict"] != "useful"
+    assert client.get(f"/api/receptor/{rid}/Chandigarh").json()["skill"]["verdict"] != "useful"
     led = client.get(f"/api/ledger/{rid}").json()
     assert led["revision_points"]["Delhi"] == {"median": 9, "p90": 20}  # the worse season
     assert "simulated" in client.get(f"/api/targeting/{rid}").json()["label"]

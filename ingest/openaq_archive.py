@@ -40,6 +40,8 @@ def find_locations() -> list[dict]:
                 "parameters_id": 2, "limit": 1000, "page": page,
             }).json()["results"]  # fmt: skip
             for loc in res:
+                if (loc.get("country") or {}).get("code") != config.STATION_COUNTRY:
+                    continue
                 out.append({
                     "location_id": loc["id"], "city": city, "name": loc["name"],
                     "country": (loc.get("country") or {}).get("code"),

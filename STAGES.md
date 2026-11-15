@@ -14,7 +14,7 @@ Ask my RAM, GPU, OS and free disk space. Create `.env.example` (FIRMS_MAP_KEY, D
 Done when: `docker compose up` works, tests run, repo pushed to GitHub.
 
 **Stage 1 ★ — Live inputs** (SPEC §0, §3)
-Read PROGRESS.md. v1 domain only. Latest GFS cycle from AWS GRIB2 (byte-range subset: 925/850/700 hPa + 10 m winds, HPBL, TMP); FIRMS VIIRS_NOAA20_NRT + VIIRS_NOAA21_NRT; India stations (CPCB feed, else data.gov.in); Pakistan stations (Punjab EPA only if terms allow; OpenAQ low-cost labelled); CAMS PM2.5 for the receptors. Store in Postgres/PostGIS with publish and observation timestamps. Record a terms/licence note per source in DECISIONS.md.
+Read PROGRESS.md. v1 domain only. Latest GFS cycle from AWS GRIB2 (byte-range subset: 925/850/700 hPa + 10 m winds, HPBL, TMP); FIRMS VIIRS_NOAA20_NRT + VIIRS_NOAA21_NRT; India stations (CPCB feed, else data.gov.in); no stations abroad (fires abroad come in through FIRMS); CAMS PM2.5 for the receptors. Store in Postgres/PostGIS with publish and observation timestamps. Record a terms/licence note per source in DECISIONS.md.
 Done when: one command ingests everything, and a script prints counts and the newest timestamp per source, flagging stale ones.
 
 **Stage 2 ★ — Simulation engine** (SPEC §4)
@@ -22,12 +22,12 @@ Read PROGRESS.md. Lagrangian model: forward 72h from fire clusters, backward fro
 Done when: a live run produces a gridded field plus a contribution table, tests pass, runtime logged.
 
 **Stage 2b ★ — Live map** (SPEC §1)
-Read PROGRESS.md. PWA with MapLibre globe + deck.gl: animated smoke particles, fires by FRP, animated winds by level, boundary-layer shading, stations with freshness, 72h slider, city and fire click panels, today's targeting table and cross-border ledger. FastAPI serves compact binary/tiles (no huge JSON). Label everything "simulated – not yet validated" until Stage 3.
+Read PROGRESS.md. PWA with MapLibre globe + deck.gl: animated smoke particles, fires by FRP, animated winds by level, boundary-layer shading, stations with freshness, 72h slider, city and fire click panels, today's targeting table and smoke source ledger (by Indian state and neighbouring country). FastAPI serves compact binary/tiles (no huge JSON). Label everything "simulated – not yet validated" until Stage 3.
 Done when: runs locally on the latest real cycle, animates smoothly on a laptop and a phone, screenshot in README.
 
 **Stage 3 ★ — Validation** (SPEC §5)
 Read PROGRESS.md. Hindcast the 2024 and 2025 seasons point-in-time on the v1 domain (archived GFS, FIRMS SP, XKDR stations; Spark for the station archive). Compare with observations, CAMS and DSS. Add uncertainty ranges to the ledger.
-Done when: README shows skill per city and per country, and the map shows it. If skill is weak, stop and tell me.
+Done when: README shows skill per city and per region, and the map shows it. If skill is weak, stop and tell me.
 
 **Stage 3b — Fire type and who it is for** (SPEC §2 item 6, §3 land cover) — added 2026-11-15
 Read PROGRESS.md. First read the land-cover dataset's terms and ask me. Label each fire cluster by land cover and season: "likely crop-residue burning", "forest / scrub", "industrial (permanent hot spot)", "unknown", with the share of its pixels on cropland. Use crop emission factors only for crop fires. Show the label on the map, in the fire panel and in the targeting table. Never label a fire "deliberate" and never name a person or farm: a satellite shows what burned, not who lit it or why. Add one line per audience to each product in the README: residents, businesses, officials.
@@ -50,7 +50,7 @@ Done when: comparison table in agent/eval/, and a real phone receives a push ale
 ## v3 — Scale
 
 **Stage 7 — Pipelines** 
-Read PROGRESS.md. Widen to the full South Asia domain and receptors. Kafka: fires, readings, new-cycle events. Airflow: per-cycle simulate → publish, daily ingest, weekly retrain. Databricks: parallel hindcasts for the wider domain.
+Read PROGRESS.md. Widen to the all-India domain (SPEC §0): East receptors with the full ledger, West/South with the stagnation outlook and a ledger only where validated. Kafka: fires, readings, new-cycle events. Airflow: per-cycle simulate → publish, daily ingest, weekly retrain. Databricks: parallel hindcasts for the wider domain.
 Done when: a new GFS cycle updates the map with no manual step.
 
 **Stage 8 — Alert policy (bandit)**

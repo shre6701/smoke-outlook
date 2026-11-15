@@ -1,4 +1,4 @@
-# Smoke & GRAP Outlook (South Asia)
+# Smoke & GRAP Outlook (India)
 
 Simulates where smoke from real fires goes over 72 hours using real forecast weather.
 Outputs are simulated and unofficial. Spec: `docs/SPEC.md`. Status: `PROGRESS.md`.
@@ -29,7 +29,7 @@ Everything shown is simulated. Each city carries its result from the validation 
 
 The 2024 and 2025 burning seasons (1 Oct – 30 Nov) were replayed one day at a time, 122 runs, each using only the weather forecast and fires that had been published before the run. Full tables: [`docs/validation.md`](docs/validation.md).
 
-**Result: weak. The simulation does not yet tell which days PM2.5 will rise, in any of the four cities.** The map says "not reliable here" for all of them.
+**Result: weak. The simulation does not yet tell which days PM2.5 will rise, in any of the three cities.** Receptors are Indian cities only; fires abroad are still simulated as sources. The map says "not reliable here" for all of them.
 
 Scores for the first 24 hours after each run. Rise match = rank correlation between the simulated and the measured day-to-day change (1 = perfect, 0 = none). Spike score = how well a simulated rise picks out the biggest measured rises (1 = perfect, 0.5 = coin toss). "Useful" needed a spike score of 0.65 or more and a rise match clearly above zero; this rule was fixed before the results were seen.
 
@@ -41,22 +41,18 @@ Scores for the first 24 hours after each run. Rise match = rank correlation betw
 | Chandigarh | 2025 | 0.14 | 0.58 | 0.67 | not reliable here |
 | Amritsar | 2024 | 0.08 | 0.58 | 0.52 | not reliable here |
 | Amritsar | 2025 | -0.15 | 0.36 | 0.68 | not reliable here |
-| Lahore | 2024 | -0.24 | 0.43 | 0.70 | not reliable here |
-| Lahore | 2025 (low-cost sensors) | 0.06 | 0.50 | 0.58 | not reliable here |
 
-| Country | Season | Rise match | Spike score | Cities useful |
+| Region | Season | Rise match | Spike score | Cities useful |
 |---|---|---|---|---|
-| India (3 cities) | 2024 | -0.01 | 0.50 | 0 of 3 |
-| India (3 cities) | 2025 | 0.05 | 0.50 | 0 of 3 |
-| Pakistan (Lahore) | 2024 | -0.24 | 0.43 | 0 of 1 |
-| Pakistan (Lahore) | 2025 | 0.06 | 0.50 | 0 of 1 |
+| North (3 cities) | 2024 | -0.01 | 0.50 | 0 of 3 |
+| North (3 cities) | 2025 | 0.05 | 0.50 | 0 of 3 |
 
 What else the hindcasts show:
-- **Season-long pattern is there.** Simulated smoke is higher on days with higher measured PM2.5 (rank correlation 0.42–0.75). But "tomorrow = today" does better (0.60–0.90), and adding the simulation to it changes the error by between 33% worse and 9% better: no reliable gain.
-- **Amounts are far too low.** Simulated fire smoke averages 0.2–1.8 µg/m³ against 60–239 measured. Published DSS (IITM) season shares for Delhi are 15.5% (2024) and 4.9% (2025); ours unscaled is 0.8% in both, so emissions are low by a factor of roughly 6–20 and the model does not reproduce the drop from 2024 to 2025.
-- **Ledger shares move.** For the same day, the Pakistan-side / India-side share changed by 4–26 points (median) between the day-ahead and same-day forecast, and by 29–56 points on the worst tenth of days. The map shows this range next to each city.
-- **CAMS** (same-day runs, total PM2.5) is shown for scale; it has an easier job and also misses the 0.65 bar in 5 of 8 city-seasons.
-- Lahore rests on one reference monitor in 2024 and low-cost sensors only in 2025.
+- **Season-long pattern is there.** Simulated smoke is higher on days with higher measured PM2.5 (rank correlation 0.42–0.75). But "tomorrow = today" does better (0.60–0.89), and adding the simulation to it changes the error by between 7% worse and 9% better: no reliable gain.
+- **Amounts are far too low.** Simulated fire smoke averages 0.2–1.4 µg/m³ against 60–163 measured. Published DSS (IITM) season shares for Delhi are 15.5% (2024) and 4.9% (2025); ours unscaled is 0.8% in both, so emissions are low by a factor of roughly 6–20 and the model does not reproduce the drop from 2024 to 2025.
+- **Ledger shares move.** For the same day, the share of a city's fire smoke from fires in Pakistan changed by 12–26 points (median) between the day-ahead and same-day forecast, and by 36–56 points on the worst tenth of days. The map shows this range next to each city.
+- **CAMS** (same-day runs, total PM2.5) is shown for scale; it has an easier job and also misses the 0.65 bar in 4 of 6 city-seasons.
+- Shares from fires abroad cannot be checked against stations in the source area, and smoke leaving India is not computed.
 
 The model has fire smoke only, stations measure all pollution, and this model does not replace DSS. Likely causes of the weak result, to work on next: fires lit after the afternoon satellite pass are missed, emissions per fire are too low, and smoke older than 3 days is dropped.
 

@@ -234,7 +234,7 @@ def test_hindcast_is_the_same_whatever_the_database_time_zone(testdb, tmp_path):
     assert np.array_equal(a["pm25"], b["pm25"])
 
 
-def _fake_season(conn, year, days, smoke_of_day, obs_of_day, cities=("Delhi", "Lahore")):
+def _fake_season(conn, year, days, smoke_of_day, obs_of_day, cities=("Delhi", "Chandigarh")):
     """Hindcast rows and station hours written straight into the tables."""
     from spark_jobs import station_archive as sa
 
@@ -347,7 +347,7 @@ def test_city_value_prefers_reference_monitors_and_survives_values_at_the_limit(
     i = v.hours_between(t0, t)
     assert obs["Delhi"][i] == 120 and ref["Delhi"][i] and nst["Delhi"][i] == 3  # median, ref only
     assert obs["Delhi"][i + 1] == 77 and not ref["Delhi"][i + 1]  # low-cost fills the gap
-    assert cens["Delhi"] == 1 and np.isnan(obs["Lahore"]).all()
+    assert cens["Delhi"] == 1 and np.isnan(obs["Chandigarh"]).all()
 
 
 def test_xkdr_times_are_read_as_indian_standard_time(tmp_path):

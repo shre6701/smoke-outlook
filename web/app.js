@@ -257,25 +257,26 @@ async function loadTargeting() {
 async function loadLedger() {
   const L = await json(`ledger/${S.meta.run_id}`);
   const cities = [...new Set(L.rows.map((r) => r.receptor))];
-  const home = Object.fromEntries(S.meta.receptors.map((r) => [r.name, r.name === "Lahore" ? "PK" : "IN"]));
+  // Indian states first (A–Z), then neighbouring countries in a fixed order; never by rank.
+  const srcName = (r) => (r.source === "IN" ? `${r.state ?? "state unknown"}, India` : (NAMES[r.source] ?? r.source));
+  const srcOrder = (a, b) => ORDER.indexOf(a.source) - ORDER.indexOf(b.source) || (a.state ?? "").localeCompare(b.state ?? "");
   const block = (city) => {
     const days = [...new Set(L.rows.filter((r) => r.receptor === city).map((r) => r.day))];
     const low = L.rows.find((r) => r.receptor === city)?.low_confidence;
     const rev = L.revision_points?.[city];
     const sk = S.meta.receptors.find((r) => r.name === city)?.skill;
     return `<div class="city-row"><b>${esc(city)}</b>${low ? '<span class="badge warn">low confidence</span>' : ""}${skillBadge(sk)}</div>${rev ? `<div class="fine">Shares typically moved by ±${Math.round(rev.median)} points (up to ±${Math.round(rev.p90)} on 9 days in 10) between a day-ahead forecast and the same-day one.</div>` : ""}` + days.map((d) => {
-      const rows = ORDER.map((c) => L.rows.find((r) => r.receptor === city && r.day === d && r.source === c)).filter(Boolean);
-      return `<div class="fine">${d} (UTC day)</div><div class="stack" role="img" aria-label="${rows.map((r) => `${NAMES[r.source]} ${pct(r.share)}`).join(", ")}">
-        ${rows.map((r) => `<span style="flex:${Math.max(r.share, 0.004)};background:${C[r.source]}" title="${NAMES[r.source]} ${pct(r.share)}"></span>`).join("")}</div>
-        <div class="shares">${rows.map((r) => `<span class="nw">${key(r.source)}${NAMES[r.source]} <b>${pct(r.share)}</b> ${range(r.share_min, r.share_max)}</span>`).join(" &nbsp; ")}</div>`;
+      const rows = L.rows.filter((r) => r.receptor === city && r.day === d).sort(srcOrder);
+      return `<div class="fine">${d} (UTC day)</div><div class="stack" role="img" aria-label="${rows.map((r) => `${esc(srcName(r))} ${pct(r.share)}`).join(", ")}">
+        ${rows.map((r) => `<span style="flex:${Math.max(r.share, 0.004)};background:${C[r.source] ?? C.other};box-shadow:inset -1px 0 0 #1c1c1a" title="${esc(srcName(r))} ${pct(r.share)}"></span>`).join("")}</div>
+        <div class="shares">${rows.map((r) => `<span class="nw">${key(r.source)}${esc(srcName(r))} <b>${pct(r.share)}</b> ${range(r.share_min, r.share_max)}</span>`).join(" &nbsp; ")}</div>`;
     }).join("");
   };
-  const group = (cc) => cities.filter((c) => home[c] === cc).map(block).join("");
   $("tab-ledger").innerHTML = `<h3>Where each city's fire smoke comes from</h3>
     <p class="fine"><span class="badge">${esc(L.label)}</span> ${esc(L.note)} ${L.revision_points && Object.keys(L.revision_points).length ? esc(L.revision_note) : ""}</p>
-    <h2>Cities in India</h2>${group("IN")}<h2>Cities in Pakistan</h2>${group("PK")}
+    ${cities.map(block).join("")}
     <details><summary class="fine">Table view</summary><table><thead><tr><th>City</th><th>Day</th><th>Source</th><th class="num">Share</th><th class="num">Range</th></tr></thead><tbody>
-    ${L.rows.map((r) => `<tr><td>${esc(r.receptor)}</td><td>${r.day}</td><td>${NAMES[r.source] ?? esc(r.source)}</td><td class="num">${pct(r.share)}</td><td class="num">${pct(r.share_min)}–${pct(r.share_max)}</td></tr>`).join("")}
+    ${L.rows.map((r) => `<tr><td>${esc(r.receptor)}</td><td>${r.day}</td><td>${esc(srcName(r))}</td><td class="num">${pct(r.share)}</td><td class="num">${pct(r.share_min)}–${pct(r.share_max)}</td></tr>`).join("")}
     </tbody></table></details>`;
 }
 

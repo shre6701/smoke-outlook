@@ -1,6 +1,7 @@
 """Live PM2.5 station readings for the v1 domain.
 
-- OpenAQ v3 (India and Pakistan): reference monitors and low-cost sensors, labelled.
+- OpenAQ v3 (India only; stations abroad are dropped): reference monitors and low-cost
+  sensors, labelled.
 - data.gov.in real-time feed (India): optional, skipped cleanly without DATAGOV_API_KEY.
 """
 
@@ -55,11 +56,14 @@ def openaq_station(loc: dict) -> dict | None:
     lat, lon = c.get("latitude"), c.get("longitude")
     if lat is None or lon is None or not config.in_domain(lat, lon):
         return None
+    country = (loc.get("country") or {}).get("code")
+    if country != config.STATION_COUNTRY:
+        return None
     return {
         "source": "openaq",
         "station_id": str(loc["id"]),
         "name": loc.get("name"),
-        "country": (loc.get("country") or {}).get("code") or "??",
+        "country": country,
         "provider": (loc.get("provider") or {}).get("name"),
         "is_reference": bool(loc.get("isMonitor")),
         "lat": lat,

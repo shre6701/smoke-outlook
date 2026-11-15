@@ -1,10 +1,10 @@
-# Smoke & GRAP Outlook (South Asia)
-Live system: simulate where smoke from real fires goes over 72h using real forecast weather, then turn it into actions (targeting brief, stagnation outlook, GRAP alerts, cross-border smoke ledger, claim checker). Full spec: `docs/SPEC.md`. Read only the section a stage names.
+# Smoke & GRAP Outlook (India)
+Live system: simulate where smoke from real fires goes over 72h using real forecast weather, then turn it into actions (targeting brief, stagnation outlook, GRAP alerts, smoke source ledger, claim checker) for Indian cities. Full spec: `docs/SPEC.md`. Read only the section a stage names.
 
 ## Hard rules
 - No synthetic data. Inputs are real; simulation outputs and what-ifs are labelled "simulated", with validation skill shown next to them.
 - Point-in-time: anything evaluated at time t uses only data published before t (archived forecast runs by init time, never reanalysis, in backtests). A dbt test enforces this.
-- Neutral across countries: same method and wording, both directions shown together, no blame language, uncertainty always shown, every claim cited.
+- India-centric, fair on sources: receptors are Indian cities only. Sources are split by Indian state and by neighbouring country with the same method and wording for both, always shown together. Fires abroad are simulated as sources. No blame language, uncertainty always shown, every claim cited. Say on the ledger that smoke leaving India is not shown.
 - Never show a GRAP rule without its source PDF and page. Always show probability, accuracy and "unofficial".
 - Minimal user data; no phone numbers in logs. Respect every data source's terms. Ask before anything paid.
 - **Phases:** v1 smoke map → v2 decisions → v3 scale (SPEC §0). Don't build anything from a later phase early.
