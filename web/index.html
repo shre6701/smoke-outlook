@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Smoke Outlook (simulated, unofficial)</title>
+  <meta name="theme-color" content="#1a1a19">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon-192.png">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.1/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="map" aria-label="Map of simulated fire smoke"></div>
+
+  <header id="top">
+    <strong>Smoke Outlook</strong>
+    <span id="label" class="badge">loading…</span>
+    <span class="badge quiet">Unofficial</span>
+    <button id="btn-layers" class="only-small" aria-controls="layers">Layers</button>
+    <button id="btn-info" class="only-small" aria-controls="side">Tables</button>
+  </header>
+
+  <aside id="layers" aria-label="Map layers">
+    <h2>Layers</h2>
+    <label><input type="checkbox" data-layer="particles" checked> Smoke particles <i class="sw" style="background:#cde2fb"></i></label>
+    <label><input type="checkbox" data-layer="field" checked> Fire smoke near ground <i class="sw ramp-blue"></i></label>
+    <label><input type="checkbox" data-layer="whatif"> What-if: fires continue <i class="sw" style="background:#9085e9"></i></label>
+    <label><input type="checkbox" data-layer="fires" checked> Fires seen (size = power) <i class="sw dot" style="background:#c98500"></i></label>
+    <label><input type="checkbox" data-layer="wind"> Wind
+      <select id="wind-level" aria-label="Wind level">
+        <option value="10m">10 m</option><option value="925">925 hPa (~600 m)</option>
+        <option value="850">850 hPa (~1.3 km)</option><option value="700">700 hPa (~2.9 km)</option>
+      </select></label>
+    <label><input type="checkbox" data-layer="pbl"> Trapped air (low mixing layer) <i class="sw" style="background:#8a8a84"></i></label>
+    <label><input type="checkbox" data-layer="stations" checked> Measured PM2.5 (all sources) <i class="sw ramp-orange"></i></label>
+    <div id="legend"></div>
+    <h2>Data freshness</h2>
+    <ul id="fresh"></ul>
+    <p class="fine" id="runinfo"></p>
+  </aside>
+
+  <aside id="side" aria-label="Tables and details">
+    <nav role="tablist">
+      <button role="tab" data-tab="target" aria-selected="true">Targeting</button>
+      <button role="tab" data-tab="ledger">Ledger</button>
+      <button role="tab" data-tab="detail">Details</button>
+    </nav>
+    <section id="tab-target"></section>
+    <section id="tab-ledger" hidden></section>
+    <section id="tab-detail" hidden><p class="fine">Click a city or a fire on the map.</p></section>
+  </aside>
+
+  <footer id="timebar">
+    <button id="play" aria-label="Play or pause">▶</button>
+    <input id="slider" type="range" min="0" max="1" step="1" value="0" aria-label="Time">
+    <div id="clock"><b id="t-utc">–</b><span id="t-local"></span><span id="t-rel" class="badge quiet"></span></div>
+  </footer>
+  <div id="tip" role="status"></div>
+
+  <script src="https://unpkg.com/maplibre-gl@5.24.1/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/deck.gl@9.4.1/dist.min.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

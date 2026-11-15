@@ -29,6 +29,7 @@ HORIZON_H = 72  # forecast length
 LOOKBACK_H = 72  # fires of the last 3 days are followed (smoke lives for days)
 NOWCAST_H = 24  # results are reported from this many hours before the run
 MAX_AGE_H = 96  # backward runs stop following air older than this
+TRACK_N = 5000  # particles recorded for the map animation
 FULL_TIMES = 73  # a cycle with fewer times only carries past winds, not a forecast
 AGREE = (0.67, 1.5)  # forward/backward ratio outside this = low confidence for that city
 MIN_ROW_UGM3 = 1e-4  # smaller cluster-hour contributions are not stored row by row
@@ -128,8 +129,18 @@ def run(conn, now: datetime, n_particles: int = 150_000, max_members: int = 3,
         p = make_particles(*fires_mod.particles_for(everything, t0, n_particles))
         t_report = now_s - NOWCAST_H * 3600.0
         out_t0, conc0, fwd, stats0 = run_forward(
-            met0, p, grid, receptors, 2 * G, t_end, prm=prm, t_out_start=t_report, n_observed=G
+            met0,
+            p,
+            grid,
+            receptors,
+            2 * G,
+            t_end,
+            prm=prm,
+            t_out_start=t_report,
+            n_observed=G,
+            track_n=TRACK_N,
         )
+        track = stats0.pop("track")
         fwd = fwd[:, :, :G]
         stats0.pop("contrib2")
         conc_all = stats0.pop("conc_all")
@@ -139,7 +150,7 @@ def run(conn, now: datetime, n_particles: int = 150_000, max_members: int = 3,
     else:
         out_t0 = np.arange(0.0, t_end + 1, 3600.0)
         conc0 = np.zeros((len(out_t0), *grid.shape), dtype=np.float32)
-        conc_all, n_assumed = conc0, 0
+        conc_all, n_assumed, track = conc0, 0, None
         sources, t_stop = None, float(met0.times[0])
 
     results, foot0 = {}, None
@@ -167,8 +178,17 @@ def run(conn, now: datetime, n_particles: int = 150_000, max_members: int = 3,
 
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"sim_{init:%Y%m%d_%H}_run{now:%Y%m%d_%H%M%S}.nc"
+    tracks = {}
+    if track is not None:
+        tracks = {
+            "track_lon": (("time", "particle"), track["lon"]),
+            "track_lat": (("time", "particle"), track["lat"]),
+            "track_state": (("time", "particle"), track["state"]),
+            "track_assumed": (("particle",), (track["group"] >= G).astype(np.uint8)),
+        }
     xr.Dataset(
         {
+            **tracks,
             "pm25_fire": (("time", "lat", "lon"), conc0, {"units": "ug m-3"}),
             "pm25_fire_whatif": (
                 ("time", "lat", "lon"), conc_all, {"units": "ug m-3", "label": WHATIF_LABEL}
@@ -187,6 +207,7 @@ def run(conn, now: datetime, n_particles: int = 150_000, max_members: int = 3,
     params = {"dt_s": prm.dt, "k_h": prm.k_h, "v_dep": prm.v_dep, "burn_s": c.BURN_SECONDS,
               "n_per_arrival": n_per_arrival, "forward_over_backward": check,
               "whatif": WHATIF_LABEL, "n_assumed_events": n_assumed,
+              "n_static_dropped": fires.n_static,
               "low_confidence": weak_cities(check), **stats0}  # fmt: skip
     run_id = conn.execute(
         """
@@ -246,7 +267,7 @@ def run(conn, now: datetime, n_particles: int = 150_000, max_members: int = 3,
     conn.commit()
     return {
         "run_id": run_id, "init": init, "started_at": now, "members": list(member_paths),
-        "n_detections": fires.n_detections, "n_events": n_events,
+        "n_detections": fires.n_detections, "n_events": n_events, "n_static": fires.n_static,
         "n_clusters": fires.n_clusters, "emission_kg": float(e.sum()),
         "emission_frp_kg": float(e2.sum()), "left_grid_frac": stats0.get("left_grid_frac", 0.0),
         "n_particles": n_part, "conc_max": float(conc0.max()), "n_rows": n_rows,
@@ -274,7 +295,8 @@ def main() -> int:
     lo = r["emission_frp_kg"] * c.EF_PM25_LOW / c.EF_PM25_CENTRAL / 1000
     print(f"run {r['run_id']}: {LABEL}")
     print(f"  GFS {r['init']:%Y-%m-%d %HZ}, members {r['members']}")
-    print(f"  {r['n_detections']} detections -> {r['n_events']} fire events -> "
+    print(f"  {r['n_detections']} detections ({r['n_static']} more dropped as permanent "
+          f"industrial hot spots) -> {r['n_events']} fire events -> "
           f"{r['n_clusters']} clusters")  # fmt: skip
     print(f"  PM2.5 emitted: {r['emission_kg'] / 1000:.0f} t (range {lo:.0f}-{hi:.0f} t: "
           f"fire-power method to burned-area method)")  # fmt: skip

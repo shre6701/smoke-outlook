@@ -13,12 +13,14 @@ from datetime import UTC, date, datetime, timedelta
 import numpy as np
 
 from ingest import config
+from sim.fires import NOT_STATIC, STATIC_CTE
 
 RES = 0.25  # degrees; scoring grid
-EVENTS_SQL = """
-    WITH d AS (
-        SELECT *, floor(extract(epoch FROM observed_at) / 21600) AS win
-        FROM fire_detection WHERE observed_at >= %s AND observed_at < %s AND frp_mw > 0
+EVENTS_SQL = f"""
+    WITH {STATIC_CTE}, d AS (
+        SELECT f.*, floor(extract(epoch FROM observed_at) / 21600) AS win
+        FROM fire_detection f
+        WHERE observed_at >= %(start)s AND observed_at < %(end)s AND frp_mw > 0 AND {NOT_STATIC}
     ), g AS (
         SELECT *, ST_ClusterDBSCAN(geom, 0.004, 1) OVER (PARTITION BY win) AS grp FROM d
     ), per_sat AS (
@@ -41,7 +43,7 @@ def daily_cells(conn, start: date, end: date) -> dict[date, np.ndarray]:
     days = {start + timedelta(days=i): np.zeros((ny, nx)) for i in range((end - start).days + 1)}
     t0 = datetime(start.year, start.month, start.day, tzinfo=UTC)
     t1 = datetime(end.year, end.month, end.day, tzinfo=UTC) + timedelta(days=1)
-    for day, lon, lat, n in conn.execute(EVENTS_SQL, (t0, t1)).fetchall():
+    for day, lon, lat, n in conn.execute(EVENTS_SQL, {"start": t0, "end": t1}).fetchall():
         iy = min(int((lat - config.SOUTH) / RES), ny - 1)
         ix = min(int((lon - config.WEST) / RES), nx - 1)
         days[day][iy, ix] += n

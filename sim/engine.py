@@ -141,7 +141,8 @@ class Receptor:
 
 def run_forward(met: Met, p: Particles, grid: Grid, receptors: list[Receptor], n_groups: int,
                 t_end: float, out_every: float = 3600.0, prm: Params | None = None,
-                t_out_start: float | None = None, n_observed: int | None = None):  # fmt: skip
+                t_out_start: float | None = None, n_observed: int | None = None,
+                track_n: int = 0):  # fmt: skip
     """Run from the first release to t_end.
 
     Returns (out_times [s], conc [time, lat, lon] µg/m³ near the ground,
@@ -160,6 +161,17 @@ def run_forward(met: Met, p: Particles, grid: Grid, receptors: list[Receptor], n
     contrib = np.zeros((len(out_times), len(receptors), n_groups), dtype=np.float32)
     contrib2 = np.zeros_like(contrib) if p.mass2 is not None else None
     conc_all = np.zeros_like(conc) if n_observed is not None else None
+    # A fixed random sample of particles is recorded at every output time, for the map
+    # animation: position and state (0 = not in the air, 1 = in the boundary layer, 2 = above).
+    pick = rng.choice(p.n, size=min(track_n, p.n), replace=False) if track_n else None
+    track = None
+    if pick is not None:
+        track = {
+            "lon": np.full((len(out_times), len(pick)), np.nan, dtype=np.float32),
+            "lat": np.full((len(out_times), len(pick)), np.nan, dtype=np.float32),
+            "state": np.zeros((len(out_times), len(pick)), dtype=np.uint8),
+            "group": p.group[pick].copy(),
+        }
     started = np.zeros(p.n, dtype=bool)
     mass_start = float(p.mass.sum())
     k = 0
@@ -190,6 +202,12 @@ def run_forward(met: Met, p: Particles, grid: Grid, receptors: list[Receptor], n
                     contrib2[k, r] = (
                         np.bincount(g, weights=w2[m], minlength=n_groups) / rec.area_m2()
                     )
+            if track is not None:
+                on = started[pick] & p.alive[pick]
+                track["lon"][k, on] = p.lon[pick][on]
+                track["lat"][k, on] = p.lat[pick][on]
+                low = p.z[pick] <= met.pbl(t, p.lon[pick], p.lat[pick])
+                track["state"][k] = np.where(on, np.where(low, 1, 2), 0)
             k += 1
         if t >= t_end - 1e-6:
             break
@@ -202,6 +220,7 @@ def run_forward(met: Met, p: Particles, grid: Grid, receptors: list[Receptor], n
         "mass_left_frac": float(p.mass[p.alive].sum() / max(mass_start, 1e-30)),
         "contrib2": contrib2,
         "conc_all": conc_all,
+        "track": track,
     }
     return out_times, conc, contrib, stats
 

@@ -13,12 +13,31 @@ import numpy as np
 
 from sim import constants as c
 
-SQL = """
-    WITH d AS (
-        SELECT *, floor(extract(epoch FROM observed_at) / 21600) AS win
+# Hot spots seen at the same ~1 km spot on 10 or more of the last 45 days are not field fires
+# (cement kilns, steel works, flares, brick kilns): crop fires do not burn one spot for weeks.
+STATIC_DAYS, STATIC_WINDOW_DAYS, STATIC_RADIUS_DEG = 10, 45, 0.015
+STATIC_CTE = f"""
+    static AS (
+        SELECT round(longitude::numeric, 2)::float8 AS x, round(latitude::numeric, 2)::float8 AS y
         FROM fire_detection
+        WHERE observed_at > %(end)s::timestamptz - interval '{STATIC_WINDOW_DAYS} days'
+          AND observed_at <= %(end)s AND published_at <= %(end)s
+        GROUP BY 1, 2
+        HAVING count(DISTINCT (observed_at AT TIME ZONE 'UTC')::date) >= {STATIC_DAYS}
+    )"""
+NOT_STATIC = f"""NOT EXISTS (
+            SELECT 1 FROM static s WHERE abs(f.longitude - s.x) < {STATIC_RADIUS_DEG}
+              AND abs(f.latitude - s.y) < {STATIC_RADIUS_DEG})"""
+
+SQL = f"""
+    WITH {STATIC_CTE}, raw AS (
+        SELECT f.*, {NOT_STATIC} AS field_fire
+        FROM fire_detection f
         WHERE observed_at > %(start)s AND observed_at <= %(end)s
           AND published_at <= %(end)s AND frp_mw > 0
+    ), d AS (
+        SELECT *, floor(extract(epoch FROM observed_at) / 21600) AS win
+        FROM raw WHERE field_fire
     ), g AS (
         SELECT *, ST_ClusterDBSCAN(geom, 0.004, 1) OVER (PARTITION BY win) AS grp FROM d
     ), per_sat AS (
@@ -32,7 +51,7 @@ SQL = """
     )
     SELECT ST_ClusterDBSCAN(ST_SetSRID(ST_MakePoint(lon, lat), 4326), 0.05, 1) OVER (),
            lon, lat, t, frp, n,
-           (SELECT count(*) FROM d)
+           (SELECT count(*) FROM d), (SELECT count(*) FROM raw WHERE NOT field_fire)
     FROM ev
 """
 
@@ -56,6 +75,7 @@ class Fires:
     frp: np.ndarray  # MW, summed over the event's pixels
     pixels: np.ndarray  # number of 375 m pixels
     n_detections: int = 0  # raw detections before merging the two satellites
+    n_static: int = 0  # detections dropped as permanent hot spots (industry)
 
     @property
     def n_clusters(self) -> int:
@@ -72,13 +92,13 @@ class Fires:
 
 def load(conn, start: datetime, end: datetime) -> Fires:
     rows = conn.execute(SQL, {"start": start, "end": end}).fetchall()
-    cols = list(zip(*rows, strict=True)) if rows else [[], [], [], [], [], [], [0]]
+    cols = list(zip(*rows, strict=True)) if rows else [[], [], [], [], [], [], [0], [0]]
     naive = [t.astimezone(UTC).replace(tzinfo=None) for t in cols[3]]  # session may not be UTC
     return Fires(
         cluster=np.array(cols[0], dtype=np.intp), lon=np.array(cols[1], dtype=float),
         lat=np.array(cols[2], dtype=float), observed=np.array(naive, dtype="datetime64[s]"),
         frp=np.array(cols[4], dtype=float), pixels=np.array(cols[5], dtype=float),
-        n_detections=int(cols[6][0]),
+        n_detections=int(cols[6][0]), n_static=int(cols[7][0]),
     )  # fmt: skip
 
 
@@ -114,7 +134,7 @@ def combine(a: Fires, b: Fires) -> Fires:
         cluster=np.concatenate([a.cluster, b.cluster]), lon=np.concatenate([a.lon, b.lon]),
         lat=np.concatenate([a.lat, b.lat]), observed=np.concatenate([a.observed, b.observed]),
         frp=np.concatenate([a.frp, b.frp]), pixels=np.concatenate([a.pixels, b.pixels]),
-        n_detections=a.n_detections,
+        n_detections=a.n_detections, n_static=a.n_static,
     )  # fmt: skip
 
 

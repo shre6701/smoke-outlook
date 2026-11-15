@@ -161,11 +161,34 @@ Target machine: Windows + WSL2, 16 GB RAM, no GPU, 20-50 GB free disk.
 - The what-if is good for "how much smoke, roughly", not for "which fire". Backtest is one season, one satellite family, and backfilled data (fetched today, not point-in-time).
 - Weather is not used (rain or a harvest ending will break it).
 
-**Next (Stage 2b)**
-- Live map, using `sim_source_share`, `sim_receptor_outlook`, `sim_cluster` and `data/sim/*.nc`. Show the low-confidence flag.
-- Label everything "simulated – not yet validated"; show shares, not absolute µg/m³, until Stage 3.
+
+## Stage 2b — Live map (done, 2026-11-15)
+
+**Works** (`uv run uvicorn api.main:app --port 8000`, then open http://localhost:8000)
+- Installable web app (PWA) on a MapLibre globe with deck.gl: animated smoke particles (near ground vs aloft), smoke field, fires sized by power, animated wind at 4 levels, trapped-air shading, stations with freshness (reference vs low-cost, "no recent reading"), time slider from 24 h before the run to 72 h ahead with play.
+- Click a city: outlook chart with low–high band and the what-if as a dashed line, measured PM2.5 now, CAMS value, model self-check, largest source clusters, and a "where its air comes from" overlay. Click a fire: emission range, which cities its smoke reaches, people reached.
+- Targeting table (top 20 clusters by smoke × city population, next 48 h, with range across forecast runs) and cross-border ledger (daily shares per city, both directions in one view, ranges, disputed areas as their own class).
+- Labels everywhere: "simulated – not yet validated", "Unofficial", the what-if label when that layer is on, a low-confidence warning for Chandigarh.
+- The basemap is our own Natural Earth layer, so borders are drawn the same neutral way as in the tables; no third-party map tiles.
+- API sends grids and particle tracks as small binary arrays: the whole first load is about 0.4 MB plus 1.2 MB of particle tracks (gzip). No large JSON.
+- Permanent industrial hot spots (same spot on 10+ of the last 45 days: kilns, plants) are no longer treated as fires.
+- 53 tests pass, incl. 4 API tests. Checked in a headless browser at desktop and phone sizes: loads with no errors, all layers and panels work, offline service worker registers.
+
+**Thin**
+- **Smoothness is not measured on real hardware.** The only browser available here renders in software (3 frames/s), which says nothing about a laptop or phone GPU. Please open it on your laptop and phone and tell me if it stutters.
+- Libraries (MapLibre, deck.gl) and map fonts load from public CDNs with fixed versions; the first visit needs internet.
+- No 7-day replay (SPEC §1): the slider covers 24 h back to 72 h ahead of the latest run only.
+- "People reached" counts only the four tracked cities (a lower bound). No population grid.
+- The top-ranked cluster today is a large fire area in the Rajasthan desert seen on 6 days; it may not be crop burning (no land-cover data), and crop emission factors are applied to it.
+- Wind streaks are exaggerated for visibility and are not to scale.
+- No login, no rate limits; meant for local use until Stage 9.
+
+**Next (Stage 3)**
+- Validation: hindcast 2024 and 2025 point-in-time, compare with stations, CAMS and DSS; fit and report the emission scale; show skill per city on the map.
 
 ## Later
+- Land-cover mask so non-crop fires (desert, forest) are labelled and get their own emission factors.
+- Gridded population for a real "people reached".
 - Geostationary fire data (Meteosat over the Indian Ocean, GEO-KOMPSAT-2A) to catch the 4–6 pm fires that polar satellites miss; check access and terms first.
 - Calendar-day fire climatology for days 2–5 (the DSS method) once the 2024–2025 archive is loaded in Stage 3.
 - Ingest GFS geopotential height and terrain so wind levels sit at true height above ground.

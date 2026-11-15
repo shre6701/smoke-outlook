@@ -82,6 +82,17 @@ One line each: what — why — alternative.
 - Season backfill rows are marked `published_basis = 'backfill'` with today's fetch time — they can never pass as data that was available earlier — alternative: pretend they were live.
 - Forward particle cap raised to 150,000 — observed and assumed fires share it — alternative: keep 100,000 (noisier map).
 
+## Stage 2b
+- Web app is plain HTML/CSS/JS modules with no build step — no Node on the machine, nothing to compile, easy to read — alternative: React/Vite build.
+- MapLibre GL JS 5.24.1 and deck.gl 9.4.1 from unpkg at fixed versions, cached by the service worker — each file is over the 1 MB commit limit — alternative: vendor them in the repo.
+- Basemap = our own Natural Earth boundaries served by the API — one neutral depiction of borders everywhere, works offline — alternative: third-party tiles (their border choices, extra terms).
+- Grids drawn on canvases as MapLibre canvas sources; points and lines in deck.gl (overlaid, not interleaved) — both work on the globe — alternative: deck.gl BitmapLayer.
+- Binary formats: uint8 log-scaled fields, uint16 particle positions, int8 winds — about 1.6 MB for everything on first load — alternative: JSON (10× larger).
+- Targeting weight = city population from Natural Earth populated places — public domain, already in our source — alternative: gridded population (new dataset).
+- Fire markers, India, Pakistan, disputed and what-if colours come from a colour-blind-checked palette; countries always carry a text label — never colour alone — alternative: red/green.
+- Static hot spots (10+ days of the last 45 at one ~1 km spot) are dropped before simulation — crop fires do not burn one spot for weeks — alternative: FIRMS "type" flag (archive product only).
+- Headless-browser libraries were unpacked into the scratch folder, not installed system-wide — no sudo, nothing changed on the machine — alternative: `playwright install-deps`.
+
 ### Terms / licence per source (as understood on 2026-11-14; re-check before any public launch)
 - NOAA GFS on AWS Open Data — US Government open data, no use restrictions; credit NOAA/NCEP.
 - NASA FIRMS — free and open (NASA data policy); MAP_KEY limit 5,000 transactions per 10 min; cite NASA FIRMS / LANCE; NRT data is not for life-safety decisions.
@@ -91,4 +102,5 @@ One line each: what — why — alternative.
 - Punjab EPA — terms not found; not used.
 - Natural Earth — public domain; no restriction, credit optional ("Made with Natural Earth").
 - WAQI / aqicn.org — not used: no redistribution of cached or archived data, attribution and prior notice required.
+- MapLibre GL JS (BSD-3-Clause) and deck.gl (MIT), loaded from unpkg; map fonts from demotiles.maplibre.org (Noto Sans, OFL).
 - FINN v2.5 — only published method constants are used (Wiedinmyer et al. 2023, CC BY 4.0), not its data.

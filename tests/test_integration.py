@@ -528,3 +528,25 @@ def test_datagov_fetch_pages_through_and_stores_as_published(testdb, monkeypatch
         "SELECT unit, parameter, count(*) FROM station_reading GROUP BY 1, 2"
     ).fetchone()
     assert (unit, param, n) == ("as published", "pm25_avg_as_published", 1001)
+
+
+def test_permanent_hot_spots_are_not_treated_as_field_fires(testdb):
+    from sim import fires as fires_mod
+    from sim import run as sim_run
+
+    conn = testdb()
+    sim_run.ensure_schema(conn)
+    now = datetime.now(UTC).replace(microsecond=0)
+    for day in range(12):  # a kiln: the same spot, 12 days in a row
+        t = now - timedelta(days=day, hours=3)
+        add_fire(conn, 29.0004, 76.0003, 2.0, t, t + timedelta(hours=1))
+    one_off = now - timedelta(hours=5)
+    add_fire(conn, 29.2, 76.2, 6.0, one_off, one_off + timedelta(hours=1))  # a field fire
+    # A field that burned on only 3 days is still a fire.
+    for day in range(3):
+        t = now - timedelta(days=day, hours=4)
+        add_fire(conn, 29.5, 76.5, 3.0, t, t + timedelta(hours=1))
+    conn.commit()
+    f = fires_mod.load(conn, now - timedelta(hours=72), now)
+    assert f.n_static == 3  # the kiln's three sightings inside the 72 h window
+    assert f.n_detections == 4 and sorted(f.frp.tolist()) == [3.0, 3.0, 3.0, 6.0]

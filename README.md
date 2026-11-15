@@ -13,6 +13,18 @@ docker compose up -d        # Postgres + PostGIS
 uv run pytest
 ```
 
+## The map (Stage 2b)
+
+```bash
+uv run uvicorn api.main:app --port 8000    # then open http://localhost:8000
+```
+
+![Map on a laptop: fires, smoke particles, stations and the Delhi outlook panel](docs/img/map-desktop.png)
+
+<img src="docs/img/map-phone.png" alt="Map on a phone" width="300">
+
+Everything shown is simulated and not yet validated. Absolute smoke values are known to be too low; shares and rankings are the usable output.
+
 ## Live inputs (Stage 1)
 
 ```bash
