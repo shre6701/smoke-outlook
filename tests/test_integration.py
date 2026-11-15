@@ -298,10 +298,22 @@ def test_sim_run_end_to_end(testdb, tmp_path, session_tz):
     counts = dict(conn.execute("SELECT member, count(*) FROM sim_receptor_hourly GROUP BY 1"))
     assert counts[f"gfs_{init:%Y%m%d_%H}"] - counts[f"gfs_{prev:%Y%m%d_%H}"] == 4 * 6
 
+    # What-if (fires assumed to continue): never below the observed-fires value, equal to it
+    # before the run time, and above it somewhere in the forecast.
+    w = conn.execute(
+        "SELECT count(*) FILTER (WHERE o.pm25_whatif_ugm3 < o.pm25_ugm3 - 1e-6), "
+        "max(abs(o.pm25_whatif_ugm3 - o.pm25_ugm3)) FILTER (WHERE o.valid_at <= r.started_at), "
+        "max(o.pm25_whatif_ugm3 - o.pm25_ugm3) FILTER (WHERE o.valid_at > r.started_at) "
+        "FROM sim_receptor_outlook o JOIN sim_run r USING (run_id)"
+    ).fetchone()
+    assert w[0] == 0 and w[1] < 1e-6 and w[2] > 0 and r["n_assumed"] > 0
+
     import xarray as xr
 
     ds = xr.open_dataset(r["path"])
     assert ds.pm25_fire.shape[1:] == (80, 100) and ds.footprint.shape == (4, 80, 100)
+    assert float((ds.pm25_fire_whatif - ds.pm25_fire).min()) >= -1e-6
+    assert "what-if" in ds.pm25_fire_whatif.attrs["label"]
     assert float(ds.pm25_fire.min()) >= 0 and not bool(ds.pm25_fire.isnull().any())
     assert ds.attrs["label"] == sim_run.LABEL
 
@@ -516,3 +528,25 @@ def test_datagov_fetch_pages_through_and_stores_as_published(testdb, monkeypatch
         "SELECT unit, parameter, count(*) FROM station_reading GROUP BY 1, 2"
     ).fetchone()
     assert (unit, param, n) == ("as published", "pm25_avg_as_published", 1001)
+
+
+def test_permanent_hot_spots_are_not_treated_as_field_fires(testdb):
+    from sim import fires as fires_mod
+    from sim import run as sim_run
+
+    conn = testdb()
+    sim_run.ensure_schema(conn)
+    now = datetime.now(UTC).replace(microsecond=0)
+    for day in range(12):  # a kiln: the same spot, 12 days in a row
+        t = now - timedelta(days=day, hours=3)
+        add_fire(conn, 29.0004, 76.0003, 2.0, t, t + timedelta(hours=1))
+    one_off = now - timedelta(hours=5)
+    add_fire(conn, 29.2, 76.2, 6.0, one_off, one_off + timedelta(hours=1))  # a field fire
+    # A field that burned on only 3 days is still a fire.
+    for day in range(3):
+        t = now - timedelta(days=day, hours=4)
+        add_fire(conn, 29.5, 76.5, 3.0, t, t + timedelta(hours=1))
+    conn.commit()
+    f = fires_mod.load(conn, now - timedelta(hours=72), now)
+    assert f.n_static == 3  # the kiln's three sightings inside the 72 h window
+    assert f.n_detections == 4 and sorted(f.frp.tolist()) == [3.0, 3.0, 3.0, 6.0]

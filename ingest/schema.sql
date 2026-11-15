@@ -137,3 +137,12 @@ LANGUAGE sql STABLE AS $$
                (SELECT b.name FROM boundary b
                 WHERE b.kind = 'region' AND ST_Covers(b.geom, pt) LIMIT 1));
 $$;
+
+-- Natural Earth populated places (public domain): metro population, for weighting by people.
+CREATE TABLE IF NOT EXISTS place (
+    id      serial PRIMARY KEY,
+    name    text NOT NULL,
+    pop_max bigint NOT NULL,
+    geom    geometry(Point, 4326) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS place_geom_idx ON place USING gist (geom);

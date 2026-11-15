@@ -16,6 +16,7 @@ FILES = {
     "region": ("ne_10m_admin_1_states_provinces", "name", "iso_a2", None),
     "disputed": ("ne_10m_admin_0_disputed_areas", "BRK_NAME", None, "NOTE_BRK"),
 }
+PLACES = "ne_10m_populated_places_simple"
 PAD = 4.0
 DIR = config.DATA_DIR / "boundaries"
 
@@ -41,8 +42,12 @@ def near_domain(geom: dict) -> bool:
 
 
 def ingest(conn) -> tuple[str, int, str]:
-    if conn.execute("SELECT count(*) FROM boundary").fetchone()[0]:
+    have = conn.execute("SELECT (SELECT count(*) FROM boundary), (SELECT count(*) FROM place)")
+    n_boundary, n_place = have.fetchone()
+    if n_boundary and n_place:
         return "ok", 0, "already loaded"
+    conn.execute("DELETE FROM boundary")
+    conn.execute("DELETE FROM place")
     DIR.mkdir(parents=True, exist_ok=True)
     new = 0
     with conn.cursor() as cur:
@@ -61,5 +66,21 @@ def ingest(conn) -> tuple[str, int, str]:
                      props.get(p_note) if p_note else None, json.dumps(geom)),
                 )  # fmt: skip
                 new += 1
+    path = DIR / f"{PLACES}.geojson"
+    if not path.exists():
+        path.write_bytes(get(BASE + path.name, timeout=300).content)
+    places = 0
+    with conn.cursor() as cur:
+        for f in json.loads(path.read_text())["features"]:
+            lon, lat = f["geometry"]["coordinates"][:2]
+            props = f["properties"]
+            if not near_domain({"coordinates": [lon, lat]}) or not props.get("pop_max"):
+                continue
+            cur.execute(
+                "INSERT INTO place (name, pop_max, geom) VALUES (%s, %s, "
+                "ST_SetSRID(ST_MakePoint(%s, %s), 4326))",
+                (props.get("name"), int(props["pop_max"]), lon, lat),
+            )
+            places += 1
     conn.commit()
-    return "ok", new, f"{new} Natural Earth shapes near the domain"
+    return "ok", new + places, f"{new} Natural Earth shapes and {places} places near the domain"

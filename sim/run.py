@@ -20,11 +20,16 @@ from sim.engine import Grid, Params, Receptor, make_particles, run_backward, run
 from sim.met import from_netcdf
 
 LABEL = "simulated – not yet validated"
+WHATIF_LABEL = (
+    "what-if, simulated – assumes fires continue at the mean of the last 3 days; "
+    "tomorrow's fires are not known"
+)
 OUT_DIR = config.DATA_DIR / "sim"
 HORIZON_H = 72  # forecast length
 LOOKBACK_H = 72  # fires of the last 3 days are followed (smoke lives for days)
 NOWCAST_H = 24  # results are reported from this many hours before the run
 MAX_AGE_H = 96  # backward runs stop following air older than this
+TRACK_N = 5000  # particles recorded for the map animation
 FULL_TIMES = 73  # a cycle with fewer times only carries past winds, not a forecast
 AGREE = (0.67, 1.5)  # forward/backward ratio outside this = low confidence for that city
 MIN_ROW_UGM3 = 1e-4  # smaller cluster-hour contributions are not stored row by row
@@ -83,7 +88,7 @@ def _rel(path: Path) -> str:
     return str(path.relative_to(config.ROOT)) if path.is_relative_to(config.ROOT) else str(path)
 
 
-def run(conn, now: datetime, n_particles: int = 100_000, max_members: int = 3,
+def run(conn, now: datetime, n_particles: int = 150_000, max_members: int = 3,
         out_dir: Path = OUT_DIR, n_per_arrival: int = 500) -> dict:  # fmt: skip
     """One run using only data published before `now`. Returns a summary dict.
 
@@ -115,27 +120,44 @@ def run(conn, now: datetime, n_particles: int = 100_000, max_members: int = 3,
     mets = {name: from_netcdf(paths, t0=t0) for name, paths in member_paths.items()}
     met0 = next(iter(mets.values()))
     n_part, stats0, check = 0, {}, {}
+    G = fires.n_clusters
     if n_events:
-        p = make_particles(*fires_mod.particles_for(fires, t0, n_particles))
-        t_report = (np.datetime64(now.replace(tzinfo=None), "s") - t0).astype(float)
-        t_report -= NOWCAST_H * 3600.0
+        now_s = (np.datetime64(now.replace(tzinfo=None), "s") - t0).astype(float)
+        assumed = fires_mod.assume_future(fires, t0, now_s, t_end, LOOKBACK_H)
+        n_assumed = len(assumed.frp)
+        everything = fires_mod.combine(fires, assumed)  # observed + what-if twins
+        p = make_particles(*fires_mod.particles_for(everything, t0, n_particles))
+        t_report = now_s - NOWCAST_H * 3600.0
         out_t0, conc0, fwd, stats0 = run_forward(
-            met0, p, grid, receptors, fires.n_clusters, t_end, prm=prm, t_out_start=t_report
+            met0,
+            p,
+            grid,
+            receptors,
+            2 * G,
+            t_end,
+            prm=prm,
+            t_out_start=t_report,
+            n_observed=G,
+            track_n=TRACK_N,
         )
+        track = stats0.pop("track")
+        fwd = fwd[:, :, :G]
         stats0.pop("contrib2")
+        conc_all = stats0.pop("conc_all")
         n_part = stats0.pop("particles")
-        sources = fires_mod.sources_for(fires, t0)
+        sources = fires_mod.sources_for(everything, t0)
         t_stop = float(np.floor(sources.start.min() / prm.dt) * prm.dt)
     else:
         out_t0 = np.arange(0.0, t_end + 1, 3600.0)
         conc0 = np.zeros((len(out_t0), *grid.shape), dtype=np.float32)
+        conc_all, n_assumed, track = conc0, 0, None
         sources, t_stop = None, float(met0.times[0])
 
     results, foot0 = {}, None
     for name, met in mets.items():
         arr = out_t0[out_t0 <= met.times[-1] + 1e-6]
         out = run_backward(met, receptors, grid, arr, t_stop, n_per_arrival, prm,
-                           sources=sources, n_groups=fires.n_clusters,
+                           sources=sources, n_groups=2 * G,
                            max_age=MAX_AGE_H * 3600.0)  # fmt: skip
         foot, contrib = out if sources is not None else (out, None)
         if contrib is None:
@@ -144,7 +166,7 @@ def run(conn, now: datetime, n_particles: int = 100_000, max_members: int = 3,
         if foot0 is None:
             foot0 = foot
     if n_events:  # self-check: receptor dose, forward / backward (1.0 = perfect agreement)
-        back = results[next(iter(results))][1][0].sum(axis=(0, 2))
+        back = results[next(iter(results))][1][0][:, :, :G].sum(axis=(0, 2))
         ahead = fwd.sum(axis=(0, 2))
         check = {
             r.name: round(float(ahead[i] / back[i]), 3) if back[i] > 0 else None
@@ -156,9 +178,21 @@ def run(conn, now: datetime, n_particles: int = 100_000, max_members: int = 3,
 
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"sim_{init:%Y%m%d_%H}_run{now:%Y%m%d_%H%M%S}.nc"
+    tracks = {}
+    if track is not None:
+        tracks = {
+            "track_lon": (("time", "particle"), track["lon"]),
+            "track_lat": (("time", "particle"), track["lat"]),
+            "track_state": (("time", "particle"), track["state"]),
+            "track_assumed": (("particle",), (track["group"] >= G).astype(np.uint8)),
+        }
     xr.Dataset(
         {
+            **tracks,
             "pm25_fire": (("time", "lat", "lon"), conc0, {"units": "ug m-3"}),
+            "pm25_fire_whatif": (
+                ("time", "lat", "lon"), conc_all, {"units": "ug m-3", "label": WHATIF_LABEL}
+            ),
             "footprint": (("receptor", "lat", "lon"), foot0, {"units": "s m-3"}),
         },
         coords={
@@ -172,6 +206,8 @@ def run(conn, now: datetime, n_particles: int = 100_000, max_members: int = 3,
     e, e2 = fires.area_kg, fires.frp_kg
     params = {"dt_s": prm.dt, "k_h": prm.k_h, "v_dep": prm.v_dep, "burn_s": c.BURN_SECONDS,
               "n_per_arrival": n_per_arrival, "forward_over_backward": check,
+              "whatif": WHATIF_LABEL, "n_assumed_events": n_assumed,
+              "n_static_dropped": fires.n_static,
               "low_confidence": weak_cities(check), **stats0}  # fmt: skip
     run_id = conn.execute(
         """
@@ -204,39 +240,45 @@ def run(conn, now: datetime, n_particles: int = 100_000, max_members: int = 3,
                  fires.observed[m].max().astype(datetime).replace(tzinfo=UTC),
                  float(fires.lon[m] @ w), float(fires.lat[m] @ w)),
             )  # fmt: skip
-        cols = "(run_id, member, cluster_id, receptor, valid_at, pm25_ugm3, pm25_frp_ugm3)"
+        # Columns: observed fires (burned-area method), observed fires (fire-power method),
+        # what-if repeats of the same cluster on coming days (burned-area method).
+        cols = "(run_id, member, cluster_id, receptor, valid_at, pm25_ugm3, pm25_frp_ugm3, "
+        cols += "pm25_assumed_ugm3)"
         with cur.copy(f"COPY sim_contribution {cols} FROM STDIN") as copy:
             for name, (arr, contrib) in results.items():
-                ti, ri, ki = np.nonzero(contrib[0] > MIN_ROW_UGM3)
+                seen, twin = contrib[0][:, :, :G], contrib[0][:, :, G:]
+                ti, ri, ki = np.nonzero((seen > MIN_ROW_UGM3) | (twin > MIN_ROW_UGM3))
                 for a, b, k in zip(ti, ri, ki, strict=True):
                     valid = init + timedelta(seconds=float(arr[a]))
                     copy.write_row((run_id, name, int(k), receptors[b].name, valid,
-                                    float(contrib[0, a, b, k]),
-                                    float(contrib[1, a, b, k])))  # fmt: skip
+                                    float(seen[a, b, k]), float(contrib[1, a, b, k]),
+                                    float(twin[a, b, k])))  # fmt: skip
                     n_rows += 1
-        cols = "(run_id, member, receptor, valid_at, pm25_ugm3, pm25_frp_ugm3)"
+        cols = "(run_id, member, receptor, valid_at, pm25_ugm3, pm25_frp_ugm3, pm25_whatif_ugm3)"
         with cur.copy(f"COPY sim_receptor_hourly {cols} FROM STDIN") as copy:
             for name, (arr, contrib) in results.items():
-                total = contrib.sum(axis=3)
+                seen = contrib[:, :, :, :G].sum(axis=3)
+                both = contrib[0].sum(axis=2)
                 for a in range(len(arr)):
                     valid = init + timedelta(seconds=float(arr[a]))
                     for b, rec in enumerate(receptors):
-                        copy.write_row((run_id, name, rec.name, valid, float(total[0, a, b]),
-                                        float(total[1, a, b])))  # fmt: skip
+                        copy.write_row((run_id, name, rec.name, valid, float(seen[0, a, b]),
+                                        float(seen[1, a, b]), float(both[a, b])))  # fmt: skip
     conn.commit()
     return {
         "run_id": run_id, "init": init, "started_at": now, "members": list(member_paths),
-        "n_detections": fires.n_detections, "n_events": n_events,
+        "n_detections": fires.n_detections, "n_events": n_events, "n_static": fires.n_static,
         "n_clusters": fires.n_clusters, "emission_kg": float(e.sum()),
         "emission_frp_kg": float(e2.sum()), "left_grid_frac": stats0.get("left_grid_frac", 0.0),
         "n_particles": n_part, "conc_max": float(conc0.max()), "n_rows": n_rows,
+        "n_assumed": n_assumed,
         "check": check, "runtime_s": runtime, "path": path,
     }  # fmt: skip
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--particles", type=int, default=100_000, help="forward particle cap")
+    ap.add_argument("--particles", type=int, default=150_000, help="forward particle cap")
     ap.add_argument("--members", type=int, default=3, help="max forecast cycles in the ensemble")
     args = ap.parse_args()
     conn = db.connect()
@@ -253,7 +295,8 @@ def main() -> int:
     lo = r["emission_frp_kg"] * c.EF_PM25_LOW / c.EF_PM25_CENTRAL / 1000
     print(f"run {r['run_id']}: {LABEL}")
     print(f"  GFS {r['init']:%Y-%m-%d %HZ}, members {r['members']}")
-    print(f"  {r['n_detections']} detections -> {r['n_events']} fire events -> "
+    print(f"  {r['n_detections']} detections ({r['n_static']} more dropped as permanent "
+          f"industrial hot spots) -> {r['n_events']} fire events -> "
           f"{r['n_clusters']} clusters")  # fmt: skip
     print(f"  PM2.5 emitted: {r['emission_kg'] / 1000:.0f} t (range {lo:.0f}-{hi:.0f} t: "
           f"fire-power method to burned-area method)")  # fmt: skip
@@ -275,6 +318,14 @@ def main() -> int:
         split = ", ".join(f"{cc} {sh:.0%}" for rec, cc, sh in shares if rec == name and sh)
         print(f"  {name:11} peak fire smoke {peak:6.1f} ug/m3 (range {lo:.1f}-{hi:.1f}) "
               f"at {when.astimezone(UTC):%d %b %H:%M} UTC | 72 h: {split or 'none'}")  # fmt: skip
+    print(f"  {WHATIF_LABEL}:")
+    for name, peak, when in conn.execute(
+        "SELECT DISTINCT ON (receptor) receptor, o.pm25_whatif_ugm3, valid_at "
+        "FROM sim_receptor_outlook o JOIN sim_run r USING (run_id) WHERE run_id = %s "
+        "AND valid_at >= r.started_at ORDER BY receptor, o.pm25_whatif_ugm3 DESC",
+        (r["run_id"],),
+    ).fetchall():
+        print(f"    {name:11} peak {peak:6.1f} ug/m3 at {when.astimezone(UTC):%d %b %H:%M} UTC")
     print("  now, measured PM2.5 (all sources) against simulated fire smoke only:")
     now_sim = dict(conn.execute(
         "SELECT DISTINCT ON (receptor) receptor, o.pm25_ugm3 FROM sim_receptor_outlook o "
