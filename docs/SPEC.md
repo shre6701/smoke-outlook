@@ -18,6 +18,9 @@ Installable web app (PWA), MapLibre GL JS v5 globe + deck.gl v9 (MapboxOverlay o
 3. **Stagnation outlook (v1):** per receptor, when calm winds and a low boundary layer will trap local emissions.
 4. **GRAP Ahead (v2):** P(each GRAP stage in force) at 24/48/72h and "what it means for you" per user type (construction, fleets, schools/parents, BS-III petrol / BS-IV diesel owners), English and Hindi, in-app and as web push.
 5. **Claim checker (v2):** cross-border smoke claims from officials and media (both countries), with sources, rated against the ledger "consistent / not consistent / can't tell", with reasoning; human approval before publishing.
+6. **Fire type (v1, Stage 3b):** each fire cluster labelled "likely crop-residue burning", "forest / scrub", "industrial" or "unknown" from land cover and season, with its basis shown. It describes what burned, never who lit it or why; no blame wording, same labels in every country.
+
+**Who uses what:** residents and parents (B2C): the map, city outlook, GRAP Ahead alerts. Businesses (construction, fleets, schools; D2C/B2B): GRAP Ahead per user type and alerts. Officials: targeting brief with fire type, cross-border ledger, stagnation outlook. Alerts go only to people who signed up in the app; nothing is sent to an authority automatically without a named recipient who agreed to it. No advice is shown where validation says "not reliable here".
 
 ## 3. Data sources (verified 14 Nov 2026)
 - **Forecast weather (simulation):** NOAA GFS 0.25° GRIB2 on AWS `noaa-gfs-bdp-pds` (2021 onward), read with byte-range subsets via the Herbie library (`herbie-data`; search strings like `:UGRD:850 mb`). Fields: UGRD/VGRD at 925/850/700 hPa and 10 m, HPBL (boundary-layer height), TMP. Confirm each field with `H.inventory()` first; if HPBL isn't in `pgrb2.0p25`, check `pgrb2b.0p25`. Archived cycles by init time give point-in-time hindcasts. Don't use `noaa-gfs-pds` (4-week rolling). dynamical.org's GFS Zarr has NO pressure-level winds or boundary-layer height; use it only for quick 10/80/100 m wind display if handy.
@@ -29,6 +32,7 @@ Installable web app (PWA), MapLibre GL JS v5 globe + deck.gl v9 (MapboxOverlay o
 - **Freshness:** every ingest records the newest timestamp per source; stale data is flagged, never shown as current. Never synthetic. Bias-corrected CAMS may fill the display only if labelled "model-filled", and never in validation.
 - **Baseline forecast:** CAMS via the Open-Meteo air-quality API (free, ~10k calls/day non-commercial, points only).
 - **Population:** WorldPop grids.
+- **Land cover (Stage 3b):** a global cropland / tree-cover map (candidate: ESA WorldCover 10 m; read its licence and confirm before use).
 - **GRAP (v2):** CAQM orders and schedules (caqm.nic.in PDFs); thresholds and restrictions per schedule version (revised Dec 2024, Nov 2025, Sep 2026); flag pre-emptive and court-driven orders.
 - **Benchmarks:** IITM DSS daily stubble share (ews.tropmet.res.in/dss; no download API found and access has been limited before, so record values from the site or dated news with their source); CAMS. Note: DSS's same-day stubble share uses the previous evening's VIIRS fire counts, and its 3-day stubble forecast uses climatological fire counts and a 2021 emissions inventory. Our live-fire, forecast-wind simulation is different from that; say so clearly, and never claim to replace DSS.
 - **Claims (v2):** a curated list of official statements and news URLs from both countries; no scraping against terms.

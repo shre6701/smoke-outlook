@@ -123,3 +123,38 @@ def test_stations_report_stale_readings(client, testdb):
     s = client.get("/api/stations").json()
     assert dict(zip(s["name"], s["stale"], strict=True)) == {"fresh": False, "old": True}
     assert "all pollution sources" in s["note"]
+
+
+def test_labels_say_not_validated_until_skill_exists_then_show_it_per_city(client, testdb):
+    import json
+
+    from sim import validate
+
+    m = client.get("/api/meta").json()
+    assert "not yet validated" in m["label"] and not m["validated"]
+    assert all(r["skill"] is None for r in m["receptors"])
+
+    conn = testdb()
+    conn.execute(validate.SCHEMA)
+    ins = "INSERT INTO validation_skill (scope, name, season, lead_day, metrics) VALUES "
+    ins += "(%s, %s, %s, %s, %s)"
+    good = {"n_days": 60, "verdict": "useful", "r_change": 0.5, "auc_spike": 0.8,
+            "stations_reference_share": 1.0}  # fmt: skip
+    weak = {**good, "verdict": "not reliable here", "auc_spike": 0.55}
+    for name, season, metrics in (("Delhi", 2024, good), ("Delhi", 2025, good),
+                                  ("Lahore", 2024, good), ("Lahore", 2025, weak)):  # fmt: skip
+        conn.execute(ins, ("city", name, season, 1, json.dumps(metrics)))
+    conn.execute(ins, ("ledger", "Delhi", 2024, 0, '{"median_points": 6, "p90_points": 20}'))
+    conn.execute(ins, ("ledger", "Delhi", 2025, 0, '{"median_points": 9, "p90_points": 15}'))
+    conn.commit()
+
+    m = client.get("/api/meta").json()
+    assert m["validated"] and "not yet validated" not in m["label"] and "simulated" in m["label"]
+    skill = {r["name"]: r["skill"] for r in m["receptors"]}
+    assert skill["Delhi"]["verdict"] == "useful"
+    assert skill["Lahore"]["verdict"] == "not reliable here"  # one weak season is enough
+    rid = m["run_id"]
+    assert client.get(f"/api/receptor/{rid}/Lahore").json()["skill"]["verdict"] != "useful"
+    led = client.get(f"/api/ledger/{rid}").json()
+    assert led["revision_points"]["Delhi"] == {"median": 9, "p90": 20}  # the worse season
+    assert "simulated" in client.get(f"/api/targeting/{rid}").json()["label"]

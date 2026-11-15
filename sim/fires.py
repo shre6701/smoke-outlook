@@ -17,7 +17,7 @@ from sim import constants as c
 # (cement kilns, steel works, flares, brick kilns): crop fires do not burn one spot for weeks.
 STATIC_DAYS, STATIC_WINDOW_DAYS, STATIC_RADIUS_DEG = 10, 45, 0.015
 STATIC_CTE = f"""
-    static AS (
+    static AS MATERIALIZED (
         SELECT round(longitude::numeric, 2)::float8 AS x, round(latitude::numeric, 2)::float8 AS y
         FROM fire_detection
         WHERE observed_at > %(end)s::timestamptz - interval '{STATIC_WINDOW_DAYS} days'

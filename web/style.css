@@ -17,6 +17,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .badge { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: #3b3520; color: #f5d98a; border: 1px solid #6a5a1e; }
 .badge.quiet { background: #2e2e2b; color: var(--text-2); border-color: var(--line); }
 .badge.warn::before { content: "⚠ "; }
+.badge.ok { background: #1f3326; color: #a9dfb9; border-color: #2f5a3d; }
+.badge.ok::before { content: "✓ "; }
 .fine { color: var(--muted); font-size: 12px; }
 #top { position: absolute; top: 0; left: 0; right: 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
   padding: calc(6px + env(safe-area-inset-top)) 10px 6px; background: linear-gradient(#1a1a19ee, #1a1a1900); z-index: 3; }

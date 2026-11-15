@@ -93,6 +93,26 @@ One line each: what — why — alternative.
 - Static hot spots (10+ days of the last 45 at one ~1 km spot) are dropped before simulation — crop fires do not burn one spot for weeks — alternative: FIRMS "type" flag (archive product only).
 - Headless-browser libraries were unpacked into the scratch folder, not installed system-wide — no sudo, nothing changed on the machine — alternative: `playwright install-deps`.
 
+## Stage 3
+- One hindcast run per day at 12:00 UTC with the 06Z forecast cycle — why: it is the first run that has the afternoon satellite pass (most fires) and a complete cycle (published about 09:50 UTC); alternative: every cycle (4× the cost for little extra).
+- Hindcasts in their own tables (`hindcast_*`), not `sim_*` — why: a past-season run can never show up on the live map; alternative: a flag on `sim_run`.
+- Point-in-time enforced by a database CHECK on `hindcast_run` plus a pytest — why: dbt is not set up yet; alternative: wait for the dbt test (Stage 7/9).
+- Archive fires = FIRMS standard product with an assumed 3-hour publish delay — why: the live feed of 2024/2025 is no longer served and the archive has no publish time; alternative: none found.
+- Archive weather every 3 hours, not every hour — why: 40 GB download instead of 120 GB; a test on live data gave 5–13% more smoke at two cities and a near-identical day-to-day pattern; alternative: hourly.
+- Hindcast uses the newest forecast cycle only and no forward (map) run — why: receptor numbers come from the backward run; keeps a run at about 7 minutes; alternative: full live configuration (3× the time).
+- Stations: OpenAQ archive for 2025 and for Lahore, XKDR for India in 2024 — why: XKDR's CPCB data ends 2025-09-01 (the spec expected it to cover 2025), and OpenAQ's archive has no CPCB stations here in 2024; alternative: one source only (would lose a season).
+- City value = median of reference monitors each hour; low-cost sensors only when no reference monitor reports — why: same rule in both countries; alternative: mean (sensitive to one bad sensor).
+- Values at the instrument limit are kept and flagged, not dropped — why: SPEC §3 (censored, not missing); a median is not moved by them.
+- Skill is judged on arrival (rises and spikes), not on amounts — why: the model has fire smoke only and stations measure everything; alternative: error in µg/m³ (would mostly measure the missing sources).
+- "Useful" rule fixed before seeing results: spike AUC ≥ 0.65 and change correlation's 90% range above zero, in every season with data — why: avoids tuning the bar to the result; alternative: judge by eye.
+- Ranges from a 5-day block bootstrap — why: consecutive days are not independent; alternative: ordinary bootstrap (ranges too narrow).
+- No fitted emission scale is applied to the live map — why: a straight-line fit also absorbs non-fire pollution on calm days, so it is an upper guide only; it is reported, not used.
+- CAMS benchmark = Open-Meteo history (same-day CAMS runs) — why: older CAMS forecast runs are not served there; this favours CAMS and is stated; alternative: Copernicus ADS download (new account, larger job).
+- DSS benchmark = only values quoted with a date in a published source (`docs/ref/dss_delhi_stubble_share.csv`) — why: no download API (SPEC §3); alternative: none without access.
+- Ledger range = how far a share moved between the day-ahead and same-day hindcast — why: measures real forecast uncertainty, independent of the emission scale; alternative: member spread only (already shown).
+- Fire query: the hot-spot list is computed once per query (`MATERIALIZED`) — why: with a full season loaded the old form took over 10 minutes; results are identical.
+- Java 17 runtime in the user folder for Spark — why: no admin rights needed; alternative: system package.
+
 ### Terms / licence per source (as understood on 2026-11-14; re-check before any public launch)
 - NOAA GFS on AWS Open Data — US Government open data, no use restrictions; credit NOAA/NCEP.
 - NASA FIRMS — free and open (NASA data policy); MAP_KEY limit 5,000 transactions per 10 min; cite NASA FIRMS / LANCE; NRT data is not for life-safety decisions.
@@ -104,3 +124,6 @@ One line each: what — why — alternative.
 - WAQI / aqicn.org — not used: no redistribution of cached or archived data, attribution and prior notice required.
 - MapLibre GL JS (BSD-3-Clause) and deck.gl (MIT), loaded from unpkg; map fonts from demotiles.maplibre.org (Noto Sans, OFL).
 - FINN v2.5 — only published method constants are used (Wiedinmyer et al. 2023, CC BY 4.0), not its data.
+- OpenAQ archive on AWS (`openaq-data-archive`) — public, no key; data keeps each provider's licence (CPCB, AirNow / US State Department, AirGradient and other sensor networks); credit OpenAQ and the provider.
+- XKDR Forum India Air Quality Database — CC BY 4.0; credit "India Air Quality Database, XKDR Forum" plus CPCB and AirNow; used for validation only.
+- NASA FIRMS standard (archive) product — same terms as the near-real-time feed; credit NASA FIRMS.
