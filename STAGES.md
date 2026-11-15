@@ -29,6 +29,10 @@ Done when: runs locally on the latest real cycle, animates smoothly on a laptop 
 Read PROGRESS.md. Hindcast the 2024 and 2025 seasons point-in-time on the v1 domain (archived GFS, FIRMS SP, XKDR stations; Spark for the station archive). Compare with observations, CAMS and DSS. Add uncertainty ranges to the ledger.
 Done when: README shows skill per city and per country, and the map shows it. If skill is weak, stop and tell me.
 
+**Stage 3b — Fire type and who it is for** (SPEC §2 item 6, §3 land cover) — added 2026-11-15
+Read PROGRESS.md. First read the land-cover dataset's terms and ask me. Label each fire cluster by land cover and season: "likely crop-residue burning", "forest / scrub", "industrial (permanent hot spot)", "unknown", with the share of its pixels on cropland. Use crop emission factors only for crop fires. Show the label on the map, in the fire panel and in the targeting table. Never label a fire "deliberate" and never name a person or farm: a satellite shows what burned, not who lit it or why. Add one line per audience to each product in the README: residents, businesses, officials.
+Done when: every cluster has a label with its basis, a hand-check of 30 clusters against satellite imagery gives a reported accuracy, and the targeting table can be filtered to crop fires.
+
 ## v2 — Decisions
 
 **Stage 4 — GRAP orders and rules, agent from scratch** (SPEC §3 GRAP, §8)

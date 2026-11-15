@@ -43,3 +43,38 @@ def ingest(conn) -> tuple[str, int, str]:
                 new += cur.rowcount
         conn.commit()
     return "ok", new, f"{len(config.RECEPTORS)} receptors, {new} new hourly values"
+
+
+ARCHIVE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS archive_cams_hourly (
+    receptor  text NOT NULL,
+    hour_utc  timestamptz NOT NULL,
+    pm25_ugm3 real NOT NULL,
+    PRIMARY KEY (receptor, hour_utc)
+);
+"""
+
+
+def archive(conn, start, end) -> int:
+    """CAMS PM2.5 for past dates (benchmark in validation only, never a model input).
+    Open-Meteo's history joins the first hours of successive CAMS runs, so every hour comes
+    from a run started on about the same day: a same-day CAMS forecast, not a 2-3 day one."""
+    conn.execute(ARCHIVE_SCHEMA)
+    new = 0
+    for name, (lat, lon) in config.RECEPTORS.items():
+        payload = get(
+            URL,
+            params={
+                "latitude": lat, "longitude": lon, "hourly": "pm2_5", "domains": "cams_global",
+                "timezone": "UTC", "start_date": f"{start}", "end_date": f"{end}",
+            },
+        ).json()  # fmt: skip
+        with conn.cursor() as cur:
+            for valid, pm25 in parse(payload):
+                cur.execute(
+                    "INSERT INTO archive_cams_hourly VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                    (name, valid, pm25),
+                )
+                new += cur.rowcount
+    conn.commit()
+    return new

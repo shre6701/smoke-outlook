@@ -1,6 +1,6 @@
 // Offline support: the app shell and libraries are cached; data is fetched fresh when
 // possible and falls back to the last copy (the page shows how old the data is).
-const SHELL = "shell-v1";
+const SHELL = "shell-v2";
 const DATA = "data-v1";
 const FILES = [
   "./", "index.html", "style.css", "app.js", "manifest.webmanifest", "icon-192.png",

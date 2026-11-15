@@ -163,7 +163,7 @@ function cityLayer() {
     id: "cities", data: S.meta.receptors, getPosition: (d) => [d.lon, d.lat], radiusUnits: "pixels", getRadius: 9,
     getFillColor: [0, 0, 0, 0], stroked: true, getLineColor: [240, 239, 236, 255], lineWidthMinPixels: 2, pickable: true,
     onClick: ({ object }) => object && showCity(object.name),
-    onHover: ({ object, x, y }) => tip(object && `${esc(object.name)} — click for outlook`, x, y),
+    onHover: ({ object, x, y }) => tip(object && `${esc(object.name)}${object.skill ? ` — ${SKILL_TEXT[object.skill.verdict] ?? esc(object.skill.verdict)}` : ""} — click for outlook`, x, y),
   })];
 }
 
@@ -231,6 +231,14 @@ function tab(name) {
 }
 const key = (c) => `<i class="key" style="background:${C[c] ?? C.other}"></i>`;
 const place = (r) => `${key(r.country)}${esc(r.region ?? "—")}, ${esc(NAMES[r.country] ?? r.country)}`;
+// Skill from the 2024 and 2025 hindcasts (docs/validation.md). No skill data = not yet validated.
+const SKILL_TEXT = { "useful": "smoke arrival: useful in hindcasts", "not reliable here": "smoke arrival: not reliable here" };
+const skillBadge = (k) => !k ? "" : `<span class="badge ${k.verdict === "useful" ? "ok" : "warn"}">${SKILL_TEXT[k.verdict] ?? esc(k.verdict)}</span>`;
+const num2 = (x) => (x == null ? "n/a" : x.toFixed(2));
+const skillTable = (k) => !k ? "" : `<h2>How well it did in past seasons</h2>
+    <table><thead><tr><th>Season</th><th class="num">Days</th><th class="num">Rise match</th><th class="num">Spike score</th><th class="num">CAMS</th><th>Result</th></tr></thead><tbody>
+    ${k.seasons.map((q) => `<tr><td>${q.season}</td><td class="num">${q.days ?? ""}</td><td class="num">${num2(q.change_corr)}</td><td class="num">${num2(q.spike_auc)}</td><td class="num">${num2(q.cams_spike_auc)}</td><td>${esc(q.verdict)}${(q.reference_share ?? 1) < 0.5 ? " (low-cost sensors)" : ""}</td></tr>`).join("")}</tbody></table>
+    <p class="fine">One run per day, 1 Oct – 30 Nov, using only data published before each run. Rise match: rank correlation of simulated and measured day-to-day change (1 = perfect, 0 = none). Spike score: how well a simulated rise picks out the biggest measured rises (1 = perfect, 0.5 = coin toss); CAMS = the same score for the Copernicus forecast of total PM2.5. Stations measure all pollution; the model has fire smoke only. Amounts are not validated.</p>`;
 const range = (lo, hi) => `<span class="fine">${pct(lo)}–${pct(hi)}</span>`;
 
 async function loadTargeting() {
@@ -253,7 +261,9 @@ async function loadLedger() {
   const block = (city) => {
     const days = [...new Set(L.rows.filter((r) => r.receptor === city).map((r) => r.day))];
     const low = L.rows.find((r) => r.receptor === city)?.low_confidence;
-    return `<div class="city-row"><b>${esc(city)}</b>${low ? '<span class="badge warn">low confidence</span>' : ""}</div>` + days.map((d) => {
+    const rev = L.revision_points?.[city];
+    const sk = S.meta.receptors.find((r) => r.name === city)?.skill;
+    return `<div class="city-row"><b>${esc(city)}</b>${low ? '<span class="badge warn">low confidence</span>' : ""}${skillBadge(sk)}</div>${rev ? `<div class="fine">Shares typically moved by ±${Math.round(rev.median)} points (up to ±${Math.round(rev.p90)} on 9 days in 10) between a day-ahead forecast and the same-day one.</div>` : ""}` + days.map((d) => {
       const rows = ORDER.map((c) => L.rows.find((r) => r.receptor === city && r.day === d && r.source === c)).filter(Boolean);
       return `<div class="fine">${d} (UTC day)</div><div class="stack" role="img" aria-label="${rows.map((r) => `${NAMES[r.source]} ${pct(r.share)}`).join(", ")}">
         ${rows.map((r) => `<span style="flex:${Math.max(r.share, 0.004)};background:${C[r.source]}" title="${NAMES[r.source]} ${pct(r.share)}"></span>`).join("")}</div>
@@ -262,7 +272,7 @@ async function loadLedger() {
   };
   const group = (cc) => cities.filter((c) => home[c] === cc).map(block).join("");
   $("tab-ledger").innerHTML = `<h3>Where each city's fire smoke comes from</h3>
-    <p class="fine"><span class="badge">${esc(L.label)}</span> ${esc(L.note)}</p>
+    <p class="fine"><span class="badge">${esc(L.label)}</span> ${esc(L.note)} ${L.revision_points && Object.keys(L.revision_points).length ? esc(L.revision_note) : ""}</p>
     <h2>Cities in India</h2>${group("IN")}<h2>Cities in Pakistan</h2>${group("PK")}
     <details><summary class="fine">Table view</summary><table><thead><tr><th>City</th><th>Day</th><th>Source</th><th class="num">Share</th><th class="num">Range</th></tr></thead><tbody>
     ${L.rows.map((r) => `<tr><td>${esc(r.receptor)}</td><td>${r.day}</td><td>${NAMES[r.source] ?? esc(r.source)}</td><td class="num">${pct(r.share)}</td><td class="num">${pct(r.share_min)}–${pct(r.share_max)}</td></tr>`).join("")}
@@ -295,7 +305,7 @@ async function showCity(name) {
   const d = await json(`receptor/${S.meta.run_id}/${name}`);
   const cams = d.cams.times.length ? d.cams.pm25[d.cams.times.findIndex((t) => Date.parse(t) >= Date.now())] : null;
   el.innerHTML = `<h3>${esc(name)} — fire smoke outlook</h3>
-    <p><span class="badge">${esc(d.label)}</span> ${d.low_confidence ? '<span class="badge warn">low confidence: the two calculation methods disagree here</span>' : ""}</p>
+    <p><span class="badge">${esc(d.label)}</span> ${skillBadge(d.skill)} ${d.low_confidence ? '<span class="badge warn">low confidence: the two calculation methods disagree here</span>' : ""}</p>
     <dl class="kv">
       <dt>Measured now</dt><dd>${d.measured_now ? `<b>${d.measured_now.pm25} µg/m³</b> PM2.5, ${d.measured_now.stations} ${d.measured_now.reference ? "reference" : "low-cost"} stations (${esc(d.measured_now.note)})` : "no recent reading"}</dd>
       <dt>Model check</dt><dd>${d.self_check ?? "–"} (1.0 = the two methods agree)</dd>
@@ -306,6 +316,7 @@ async function showCity(name) {
     <div class="shares">${`<i class="key" style="background:#3987e5"></i>Fires already seen (band = low–high range) &nbsp; <i class="key" style="background:${C.whatif}"></i>What-if: fires continue (dashed)`}</div>
     <p class="fine">${esc(d.whatif_label)}</p>
     <button id="foot-btn">Show where its air comes from</button>
+    ${skillTable(d.skill)}
     <h2>Largest sources, next 72 h (fires already seen)</h2>
     <table><tbody>${d.top_clusters.map((c) => `<tr class="click" data-id="${c.id}" data-lon="${c.lon}" data-lat="${c.lat}"><td>${place(c)}</td><td class="num">${pct(c.share)}</td></tr>`).join("")}</tbody></table>
     <details><summary class="fine">Table view</summary><table><thead><tr><th>UTC</th><th class="num">Seen fires</th><th class="num">Low</th><th class="num">High</th><th class="num">What-if</th></tr></thead><tbody>
@@ -385,7 +396,7 @@ async function start() {
   ctxPbl = makeCanvas("pbl", w.nx, w.ny, [w.west, w.south, w.east, w.north]);
   ctxFoot = makeCanvas("foot", g.nx, g.ny, [g.west, g.south, g.east, g.north]);
   ctxField = makeCanvas("field", g.nx, g.ny, [g.west, g.south, g.east, g.north]);
-  map.addSource("cities", { type: "geojson", data: { type: "FeatureCollection", features: m.receptors.map((r) => ({ type: "Feature", geometry: { type: "Point", coordinates: [r.lon, r.lat] }, properties: { name: r.name + (r.low_confidence ? " ⚠" : "") } })) } });
+  map.addSource("cities", { type: "geojson", data: { type: "FeatureCollection", features: m.receptors.map((r) => ({ type: "Feature", geometry: { type: "Point", coordinates: [r.lon, r.lat] }, properties: { name: r.name + (r.low_confidence || (r.skill && r.skill.verdict !== "useful") ? " ⚠" : "") + (r.skill ? `\n${r.skill.verdict === "useful" ? "useful in hindcasts" : "not reliable here"}` : "") } })) } });
   map.addLayer({ id: "city-name", type: "symbol", source: "cities", layout: { "text-field": ["get", "name"], "text-font": ["Noto Sans Regular"], "text-size": 13, "text-offset": [0, 1.2], "text-anchor": "top", "text-allow-overlap": true }, paint: { "text-color": "#f0efec", "text-halo-color": "#111110", "text-halo-width": 1.4 } });
 
   overlay = new deck.MapboxOverlay({ interleaved: false, layers: [] });

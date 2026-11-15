@@ -63,7 +63,9 @@ def run_row(conn, run_id: int | None = None) -> dict:
         "n_clusters", "emission_kg", "emission_frp_kg", "ef_low", "ef_central", "ef_high",
         "runtime_s", "path", "params", "label",
     ]  # fmt: skip
-    return dict(zip(keys, row, strict=True))
+    run = dict(zip(keys, row, strict=True))
+    run["label"] = label_for(conn, run)
+    return run
 
 
 def run_data(run: dict):
@@ -115,6 +117,47 @@ def freshness(conn) -> list[dict]:
     return out
 
 
+VALIDATED_LABEL = "simulated – skill per city shown (hindcasts of 2024 and 2025)"
+
+
+def skill(conn) -> dict:
+    """Validation results per city from the hindcasts (empty until sim.validate has run).
+    A city is "useful" only if it passed in every season that had enough measurements."""
+    if not conn.execute("SELECT to_regclass('validation_skill')").fetchone()[0]:
+        return {}
+    rows = conn.execute(
+        "SELECT scope, name, season, metrics FROM validation_skill "
+        "WHERE (scope = 'city' AND lead_day = 1) OR scope = 'ledger' ORDER BY name, season"
+    ).fetchall()
+    out: dict = {}
+    for scope, name, season, m in rows:
+        city = out.setdefault(name, {"seasons": [], "ledger_points": None})
+        if scope == "ledger":
+            prev = city["ledger_points"] or {"median": 0.0, "p90": 0.0}
+            city["ledger_points"] = {"median": max(prev["median"], m["median_points"]),
+                                     "p90": max(prev["p90"], m["p90_points"])}  # fmt: skip
+            continue
+        city["seasons"].append({
+            "season": season, "days": m.get("n_days"), "verdict": m.get("verdict"),
+            "change_corr": m.get("r_change"), "change_corr_range": m.get("r_change_ci"),
+            "spike_auc": m.get("auc_spike"), "cams_spike_auc": m.get("auc_spike_cams"),
+            "reference_share": m.get("stations_reference_share"),
+        })  # fmt: skip
+    for city in out.values():
+        scored = [s for s in city["seasons"] if s["spike_auc"] is not None]
+        city["verdict"] = (
+            "useful" if scored and all(s["verdict"] == "useful" for s in scored)
+            else "not reliable here"
+        )  # fmt: skip
+        city["low_cost_only"] = any((s["reference_share"] or 0) < 0.5 for s in city["seasons"])
+    return out
+
+
+def label_for(conn, run: dict) -> str:
+    """Runs made before validation carry "not yet validated"; once skill exists, say so."""
+    return VALIDATED_LABEL if skill(conn) else run["label"]
+
+
 @app.get("/api/meta")
 def meta(run_id: int | None = None):
     with db.connect() as conn:
@@ -125,18 +168,20 @@ def meta(run_id: int | None = None):
         receptors = []
         pops = dict(conn.execute("SELECT name, pop_max FROM place").fetchall())
         check = run["params"].get("forward_over_backward", {})
+        skills = skill(conn)
         for name, (lat, lon) in config.RECEPTORS.items():
             ratio = check.get(name)
             receptors.append({
                 "name": name, "lat": lat, "lon": lon, "population": pops.get(name),
-                "self_check": ratio,
+                "self_check": ratio, "skill": skills.get(name),
                 "low_confidence": ratio is None or not AGREE[0] <= ratio <= AGREE[1],
             })  # fmt: skip
         times = [iso(t.astype("datetime64[s]").astype(datetime).replace(tzinfo=UTC))
                  for t in ds.time.values]  # fmt: skip
         lats, lons = np.sort(wind.latitude.values), np.sort(wind.longitude.values)
         return {
-            "run_id": run["run_id"], "label": run["label"], "whatif_label": WHATIF_LABEL,
+            "run_id": run["run_id"], "label": label_for(conn, run),
+            "whatif_label": WHATIF_LABEL, "validated": bool(skills),
             "unofficial": UNOFFICIAL, "started_at": iso(run["started_at"]),
             "gfs_init": iso(run["gfs_init_time"]), "members": run["members"],
             "n_detections": run["n_detections"], "n_events": run["n_events"],
@@ -340,9 +385,11 @@ def receptor(run_id: int, name: str):
             "ORDER BY observed_at",
             (name, name),
         ).fetchall()
+        city_skill = skill(conn).get(name)
+        label = label_for(conn, run)
     ratio = run["params"].get("forward_over_backward", {}).get(name)
     return {
-        "name": name, "label": run["label"], "whatif_label": WHATIF_LABEL,
+        "name": name, "label": label, "whatif_label": WHATIF_LABEL, "skill": city_skill,
         "started_at": iso(run["started_at"]),
         "self_check": ratio,
         "low_confidence": ratio is None or not AGREE[0] <= ratio <= AGREE[1],
@@ -404,10 +451,17 @@ def ledger(run_id: int):
             "WHERE run_id = %s GROUP BY 1, 2, 3 ORDER BY 1, 4 DESC",
             (run_id,),
         ).fetchall()
+        skills = skill(conn)
+        label = label_for(conn, run)
     n_members = len(run["members"])
     check = run["params"].get("forward_over_backward", {})
     return {
-        "label": run["label"], "members": n_members,
+        "label": label, "members": n_members,
+        # how far a share moved between the forecast a day ahead and the one on the day,
+        # in the 2024 and 2025 hindcasts (percentage points; the larger of the two seasons)
+        "revision_points": {k: v["ledger_points"] for k, v in skills.items()},
+        "revision_note": "± = how much this share typically changed between the forecast made "
+                         "a day ahead and the one made on the day, in hindcasts of 2024 and 2025.",
         "note": "Share of simulated FIRE smoke only (not of all pollution), from fires seen in "
                 "the last 3 days. Disputed areas are their own class. Days are UTC days. "
                 "Range = spread across forecast runs.",

@@ -186,6 +186,35 @@ Target machine: Windows + WSL2, 16 GB RAM, no GPU, 20-50 GB free disk.
 **Next (Stage 3)**
 - Validation: hindcast 2024 and 2025 point-in-time, compare with stations, CAMS and DSS; fit and report the emission scale; show skill per city on the map.
 
+## Stage 3 — Validation (done, 2026-11-15) — RESULT: SKILL IS WEAK
+
+**Works** (`docs/validation.md`, README "Validation")
+- 122 point-in-time hindcast runs: every day of 1 Oct – 30 Nov in 2024 and 2025 at 12:00 UTC, with the forecast cycle and fires published before then (database check + test). About 6 minutes per run.
+- Station archive for the four city boxes by PySpark: OpenAQ archive (2025, Lahore) + XKDR (India 2024); 314,000 station-hours; readings at the instrument limit kept and flagged.
+- Benchmarks: persistence, CAMS (same-day runs), the few published DSS values with sources.
+- Skill per city and country in README; the map shows a badge per city, a past-seasons table in the city panel, and how far ledger shares moved in hindcasts.
+- Labels changed from "not yet validated" to "skill per city shown"; a city is "useful" only if it passes in every season.
+- 71 tests pass (18 new). Panels and labels checked in Windows Chrome on live data: no errors (the map canvas itself does not draw in that headless mode, so smoothness is still unchecked).
+
+**Result**
+- All 8 city-seasons: "not reliable here". Rise match -0.24 to 0.17, spike score 0.36 to 0.58 (0.5 = coin toss).
+- Season-long pattern exists (0.42–0.75) but persistence is better and the simulation adds nothing reliable to it.
+- Amounts low by roughly 6–20× against DSS season shares; the 2024→2025 drop in DSS is not reproduced.
+- Ledger shares for the same day move 4–26 points (median) between day-ahead and same-day forecasts.
+
+**Thin**
+- Archive weather is 3-hourly (live: hourly); on live data that changed city means by 5–13%.
+- One forecast member, one run per day, 500 particles per arrival hour.
+- DSS comparison rests on 4 daily values and 2 season means from one news report of a CSE analysis.
+- Lahore: one reference monitor in 2024, low-cost only in 2025. Amritsar: one station.
+- The rise test uses total PM2.5; fireworks (Diwali), traffic and weather-driven build-up are in the measurements and not in the model. CAMS also scores low on it.
+- No browser runs inside WSL here (missing system libraries); UI checks used Windows Chrome through a test-only harness.
+- XKDR hour convention (start of hour) is assumed, not confirmed.
+
+**Next (agreed 2026-11-15): improve the model, then re-score on the same two seasons**
+- Missed late-afternoon fires; emissions per fire; smoke older than 3 days; a better test target than total PM2.5 change.
+- Then Stage 3b (fire type) as added to STAGES.md.
+
 ## Later
 - Land-cover mask so non-crop fires (desert, forest) are labelled and get their own emission factors.
 - Gridded population for a real "people reached".
@@ -198,4 +227,5 @@ Target machine: Windows + WSL2, 16 GB RAM, no GPU, 20-50 GB free disk.
 - Pakistan reference data: ask Punjab EPA for permission or a feed; US Embassy Lahore/Islamabad monitors show no data on OpenAQ after March 2025.
 - Bias-correct Lahore low-cost sensors against the embassy history (Stage 3 topic).
 - CPCB-direct fetcher once `airquality.cpcb.gov.in` is reachable and its terms are read.
+- Fire type is now Stage 3b. Alerts to authorities (asked 2026-11-15). Possible: label each fire "likely crop-residue burning" from land cover (cropland), harvest calendar, size and time of day, and send the ranked list to district officials (this is the v2 targeting brief, SPEC §2). Not possible from satellites: who lit a fire or why, so no "deliberate" label and no blame wording. Needs first: a land-cover mask, better arrival skill than Stage 3 found, and a named, consenting recipient for any automatic message.
 - (ideas only; not built)

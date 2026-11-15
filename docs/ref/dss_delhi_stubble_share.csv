@@ -1,0 +1,10 @@
+# IITM Decision Support System (DSS): stubble-burning share of Delhi PM2.5 (%), as reported in dated sources.
+# DSS has no download API (SPEC §3), so only values quoted with a date in a published source are recorded.
+# period_start = period_end for a single day. Our simulation uses a different method (live fires, forecast winds); DSS is a benchmark, not truth.
+period_start,period_end,share_pct,source,source_date,source_url
+2024-11-01,2024-11-01,35.18,"Daily Pioneer, reporting CSE analysis of DSS data",2026-01-04,https://dailypioneer.com/news/65-air-pollution-in-2025-originated-from-outside-city-cse
+2024-11-14,2024-11-14,33.33,"Daily Pioneer, reporting CSE analysis of DSS data",2026-01-04,https://dailypioneer.com/news/65-air-pollution-in-2025-originated-from-outside-city-cse
+2024-11-15,2024-11-15,37.52,"Daily Pioneer, reporting CSE analysis of DSS data",2026-01-04,https://dailypioneer.com/news/65-air-pollution-in-2025-originated-from-outside-city-cse
+2025-11-12,2025-11-12,22.47,"Daily Pioneer, reporting CSE analysis of DSS data",2026-01-04,https://dailypioneer.com/news/65-air-pollution-in-2025-originated-from-outside-city-cse
+2024-10-15,2024-11-30,15.5,"Daily Pioneer, reporting CSE analysis of DSS data (season mean)",2026-01-04,https://dailypioneer.com/news/65-air-pollution-in-2025-originated-from-outside-city-cse
+2025-10-15,2025-11-30,4.9,"Daily Pioneer, reporting CSE analysis of DSS data (season mean)",2026-01-04,https://dailypioneer.com/news/65-air-pollution-in-2025-originated-from-outside-city-cse
