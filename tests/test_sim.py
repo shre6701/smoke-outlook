@@ -131,17 +131,60 @@ def test_emission_arithmetic_and_particle_mass():
     assert emission_frp_kg(10.0, 6.26) == pytest.approx(36000 * 0.368 * 6.26 / 1000)
     # Method A: 2 pixels x 0.14 km2 x 0.902 kg/m2 = 252,560 kg dry matter -> x EF g/kg
     assert emission_area_kg(2, 13.4) == pytest.approx(2 * 140_000 * 0.902 * 13.4 / 1000)
-    t0 = np.datetime64("2026-11-14T12:00:00", "s")
+    # Seen at 19:00, 20:00 and 22:00 UTC = after midnight IST: night fires burn one hour
+    # from the sighting and carry no missed-fire factor.
+    t0 = np.datetime64("2026-11-14T20:00:00", "s")
     f = Fires(
         cluster=np.array([0, 0, 1]), lon=np.array([75.0, 75.01, 76.0]), lat=np.full(3, 30.0),
         observed=t0 + np.array([-3600, 0, 7200]).astype("timedelta64[s]"),
         frp=np.array([1.0, 3.0, 20.0]), pixels=np.array([1.0, 1.0, 4.0]),
     )  # fmt: skip
+    assert not f.is_day.any()
     lon, lat, mass, release, cluster, mass2 = particles_for(f, t0, 1000)
     assert mass.sum() == pytest.approx(emission_area_kg(6))
     assert mass[cluster == 1].sum() == pytest.approx(emission_area_kg(4))
     assert mass2.sum() == pytest.approx(emission_frp_kg(24.0))
     assert release.min() >= -3600 and release.max() <= 7200 + c.BURN_SECONDS
+
+
+def test_day_fires_burn_through_the_afternoon_and_count_for_the_unseen_ones():
+    from sim import constants as c
+    from sim.fires import Fires, day_weights, emission_area_kg, particles_for, sources_for
+
+    t0 = np.datetime64("2026-11-14T06:00:00", "s")
+    # One fire seen at 08:00 UTC (13:30 IST, the satellite pass), one at 20:00 UTC (night).
+    f = Fires(
+        cluster=np.array([0, 1]), lon=np.array([75.0, 76.0]), lat=np.full(2, 30.0),
+        observed=t0 + np.array([2 * 3600, 14 * 3600]).astype("timedelta64[s]"),
+        frp=np.array([5.0, 5.0]), pixels=np.array([2.0, 2.0]),
+    )  # fmt: skip
+    assert list(f.is_day) == [True, False]
+    # Same pixels: the day fire emits DAY_FIRE_FACTOR times the night fire.
+    assert c.DAY_FIRE_FACTOR == pytest.approx(2.5)
+    assert f.area_kg[0] == pytest.approx(c.DAY_FIRE_FACTOR * emission_area_kg(2))
+    assert f.area_kg[1] == pytest.approx(emission_area_kg(2))
+    w = day_weights()
+    assert w.sum() == pytest.approx(1.0) and (w > 0).all()
+    assert 16.0 <= 12.0 + 0.5 * int(w.argmax()) <= 16.5  # busiest half hour ends at the peak
+    # Backward sources: all mass is there, the day fire between 12:00 and 18:30 IST
+    # (06:30 to 13:00 UTC = 0.5 h to 7 h after t0), the night fire for one hour from 14 h.
+    src = sources_for(f, t0)
+    kg = (src.rate * src.duration).sum(axis=1)
+    assert kg[0] == pytest.approx(f.area_kg.sum()) and kg[1] == pytest.approx(f.frp_kg.sum())
+    day, night = src.group == 0, src.group == 1
+    assert src.start[day].min() == pytest.approx(0.5 * 3600)
+    assert src.start[day].max() + src.duration == pytest.approx(7 * 3600)
+    assert src.start[night].min() == pytest.approx(14 * 3600)
+    assert src.start[night].max() + src.duration == pytest.approx(15 * 3600)
+    # Forward particles follow the same clock; most day smoke is released after the pass.
+    _, _, mass, release, cluster, _ = particles_for(f, t0, 20_000)
+    assert mass.sum() == pytest.approx(f.area_kg.sum())
+    r = release[cluster == 0]
+    assert r.min() >= 0.5 * 3600 and r.max() <= 7 * 3600
+    assert (r > 2 * 3600).mean() > 0.8
+    assert r.mean() == pytest.approx((0.5 + (0 + 4.5 + 6.5) / 3) * 3600, rel=0.02)
+    rn = release[cluster == 1]
+    assert rn.min() >= 14 * 3600 and rn.max() <= 15 * 3600
 
 
 def test_level_heights_follow_the_terrain():
@@ -332,6 +375,16 @@ def test_assumed_future_fires_are_future_only_and_average_the_last_days():
     empty = Fires(*(np.array([]) for _ in range(6)))
     none = assume_future(empty, t0, now_s, t_end, 72.0)
     assert len(none.frp) == 0
+    # A fire older than the repeat window is still a source but is not repeated.
+    old = Fires(
+        cluster=np.array([3]), lon=np.array([75.0]), lat=np.array([30.0]),
+        observed=t0 + np.array([-100 * 3600]).astype("timedelta64[s]"), frp=np.array([9.0]),
+        pixels=np.array([30.0]),
+    )  # fmt: skip
+    longer = combine(f, old)
+    b = assume_future(longer, t0, now_s, t_end, 72.0)
+    assert b.pixels.sum() == pytest.approx(a.pixels.sum())
+    assert set(b.cluster) == {4, 5, 6}  # offset by all 4 clusters, cluster 3 has no twin
 
 
 def test_fire_guess_backtest_scores():

@@ -4,6 +4,10 @@ Event: one fire seen during one satellite pass window. NOAA-20 and NOAA-21 pass 
 50 minutes apart and often see the same fire, so touching pixels within a 6-hour window are
 one event, sized by the satellite that saw the most pixels (no double counting).
 Cluster: events within about 5 km of each other over the whole period (PostGIS DBSCAN).
+
+Timing: a fire seen at night is assumed to burn for one hour from the sighting. A fire seen
+by day stands for burning spread over that afternoon, and for the fires the 13:30 satellite
+pass does not see (sim/constants.py, "Daytime fires").
 """
 
 from dataclasses import dataclass
@@ -82,12 +86,74 @@ class Fires:
         return int(self.cluster.max()) + 1 if len(self.cluster) else 0
 
     @property
+    def is_day(self) -> np.ndarray:
+        """Seen during the local day (the early-afternoon satellite pass)."""
+        if not len(self.frp):
+            return np.zeros(0, dtype=bool)
+        hour = _ist_hour(self.observed)
+        return (hour >= c.DAY_FIRE_HOURS_IST[0]) & (hour < c.DAY_FIRE_HOURS_IST[1])
+
+    @property
+    def factor(self) -> np.ndarray:
+        """Emission multiplier per event: day fires also stand for the unseen later ones."""
+        return np.where(self.is_day, c.DAY_FIRE_FACTOR, 1.0)
+
+    @property
     def area_kg(self):
-        return emission_area_kg(self.pixels)
+        return emission_area_kg(self.pixels) * self.factor
 
     @property
     def frp_kg(self):
-        return emission_frp_kg(self.frp)
+        return emission_frp_kg(self.frp) * self.factor
+
+
+def _ist_hour(observed: np.ndarray) -> np.ndarray:
+    local = observed.astype("datetime64[s]") + np.timedelta64(int(c.IST_OFFSET_S), "s")
+    return (local - local.astype("datetime64[D]")).astype(float) / 3600.0
+
+
+def burn_start_s(fires: Fires, t0: np.datetime64) -> np.ndarray:
+    """Per event, the start of its emission in seconds since t0: the sighting for night
+    fires, the start of that afternoon's burning (DAY_BURN_IST) for day fires."""
+    if not len(fires.frp):
+        return np.zeros(0)
+    obs = fires.observed.astype("datetime64[s]")
+    local_day = (obs + np.timedelta64(int(c.IST_OFFSET_S), "s")).astype("datetime64[D]")
+    day_start = (local_day.astype("datetime64[s]") - t0).astype(float) - c.IST_OFFSET_S
+    return np.where(fires.is_day, day_start + c.DAY_BURN_IST[0] * 3600.0,
+                    (obs - t0).astype(float))  # fmt: skip
+
+
+def day_weights() -> np.ndarray:
+    """Share of a day fire's emission in each EMISSION_SLICE_S piece of the afternoon:
+    a triangle from start to end with its top at the peak. Sums to 1."""
+    a, m, b = (h * 3600.0 for h in c.DAY_BURN_IST)
+    x = np.arange(a, b + 1.0, c.EMISSION_SLICE_S)
+    cdf = np.where(x <= m, (x - a) ** 2 / ((b - a) * (m - a)),
+                   1.0 - (b - x) ** 2 / ((b - a) * (b - m)))  # fmt: skip
+    return np.diff(cdf)
+
+
+def schedule(fires: Fires, t0: np.datetime64):
+    """Emission pieces (event index, start in s since t0, share of the event's emission),
+    each EMISSION_SLICE_S long."""
+    start = burn_start_s(fires, t0)
+    day = fires.is_day
+    n_night = round(c.BURN_SECONDS / c.EMISSION_SLICE_S)
+    out = []
+    for idx, w in (
+        (np.flatnonzero(day), day_weights()),
+        (np.flatnonzero(~day), np.full(n_night, 1.0 / n_night)),
+    ):
+        k = np.arange(len(w))
+        out.append(
+            (
+                np.repeat(idx, len(w)),
+                (start[idx][:, None] + k * c.EMISSION_SLICE_S).ravel(),
+                np.tile(w, len(idx)),
+            )
+        )
+    return tuple(np.concatenate([o[i] for o in out]) for i in range(3))
 
 
 def load(conn, start: datetime, end: datetime) -> Fires:
@@ -107,18 +173,21 @@ def assume_future(fires: Fires, t0: np.datetime64, now_s: float, t_end_s: float,
     """What-if fires for the forecast days: every fire of the last `lookback_h` hours is
     assumed to burn again at the same place and time of day on each coming day, at
     24 / lookback_h of its size, so each future day gets the mean of the last days.
-    (Chosen by backtest, see sim/fire_forecast.py.) Cluster index is offset by n_clusters,
-    so a what-if twin never mixes with its observed cluster."""
+    (Chosen by backtest, see sim/fire_forecast.py.) Older fires in `fires` are not repeated.
+    Cluster index is offset by n_clusters, so a what-if twin never mixes with its observed
+    cluster."""
     if not len(fires.frp):
         return fires
-    start = (fires.observed - t0).astype(float)
+    start_all = (fires.observed - t0).astype(float)
+    recent = np.flatnonzero(start_all > now_s - lookback_h * 3600.0)
+    start = start_all[recent]
     weight = 24.0 / lookback_h
     index, when = [], []
     n_days = int(np.ceil((t_end_s - start.min()) / 86400.0)) if len(start) else 0
     for day in range(1, n_days + 1):
         t = start + day * 86400.0
         keep = np.flatnonzero((t > now_s) & (t <= t_end_s))
-        index.append(keep)
+        index.append(recent[keep])
         when.append(t[keep])
     index = np.concatenate(index) if index else np.array([], dtype=np.intp)
     when = np.concatenate(when) if when else np.array([])
@@ -140,22 +209,26 @@ def combine(a: Fires, b: Fires) -> Fires:
 
 def particles_for(fires: Fires, t0: np.datetime64, n_total: int, n_min: int = 10, seed: int = 0):
     """Particle arrays (lon, lat, mass_kg, release_s, cluster, mass2_kg): each event gets
-    particles in proportion to its method-A emission (at least n_min), released evenly over
-    the assumed burn. mass = method A, mass2 = method B, both with the central factor."""
+    particles in proportion to its method-A emission (at least n_min), released over its
+    burning time (one hour at night, the afternoon triangle by day).
+    mass = method A, mass2 = method B, both with the central factor."""
     rng = np.random.default_rng(seed)
     e, e2 = fires.area_kg, fires.frp_kg
     n = np.maximum(n_min, np.round(n_total * e / e.sum())).astype(int)
     rep = np.repeat(np.arange(len(e)), n)
-    obs_s = (fires.observed - t0).astype(float)
-    release = obs_s[rep] + rng.random(len(rep)) * c.BURN_SECONDS
+    a, m, b = c.DAY_BURN_IST
+    night = rng.random(len(rep)) * c.BURN_SECONDS
+    day = rng.triangular(0.0, (m - a) * 3600.0, (b - a) * 3600.0, len(rep))
+    release = burn_start_s(fires, t0)[rep] + np.where(fires.is_day[rep], day, night)
     return fires.lon[rep], fires.lat[rep], (e / n)[rep], release, fires.cluster[rep], (e2 / n)[rep]
 
 
 def sources_for(fires: Fires, t0: np.datetime64):
     from sim.engine import Sources
 
+    ev, start, share = schedule(fires, t0)
     return Sources(
-        lon=fires.lon, lat=fires.lat, start=(fires.observed - t0).astype(float),
-        group=fires.cluster, rate=np.stack([fires.area_kg, fires.frp_kg]) / c.BURN_SECONDS,
-        duration=c.BURN_SECONDS,
+        lon=fires.lon[ev], lat=fires.lat[ev], start=start, group=fires.cluster[ev],
+        rate=np.stack([fires.area_kg, fires.frp_kg])[:, ev] * share / c.EMISSION_SLICE_S,
+        duration=c.EMISSION_SLICE_S,
     )  # fmt: skip

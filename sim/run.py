@@ -26,9 +26,10 @@ WHATIF_LABEL = (
 )
 OUT_DIR = config.DATA_DIR / "sim"
 HORIZON_H = 72  # forecast length
-LOOKBACK_H = 72  # fires of the last 3 days are followed (smoke lives for days)
+LOOKBACK_H = c.SMOKE_LOOKBACK_H  # fires of the last 5 days are followed (smoke lives for days)
+REPEAT_H = c.FIRE_REPEAT_H  # the what-if for coming days repeats the last 3 days
 NOWCAST_H = 24  # results are reported from this many hours before the run
-MAX_AGE_H = 96  # backward runs stop following air older than this
+MAX_AGE_H = c.SMOKE_MAX_AGE_H  # backward runs stop following air older than this
 TRACK_N = 5000  # particles recorded for the map animation
 FULL_TIMES = 73  # a cycle with fewer times only carries past winds, not a forecast
 AGREE = (0.67, 1.5)  # forward/backward ratio outside this = low confidence for that city
@@ -123,7 +124,7 @@ def run(conn, now: datetime, n_particles: int = 150_000, max_members: int = 3,
     G = fires.n_clusters
     if n_events:
         now_s = (np.datetime64(now.replace(tzinfo=None), "s") - t0).astype(float)
-        assumed = fires_mod.assume_future(fires, t0, now_s, t_end, LOOKBACK_H)
+        assumed = fires_mod.assume_future(fires, t0, now_s, t_end, REPEAT_H)
         n_assumed = len(assumed.frp)
         everything = fires_mod.combine(fires, assumed)  # observed + what-if twins
         p = make_particles(*fires_mod.particles_for(everything, t0, n_particles))
@@ -205,6 +206,8 @@ def run(conn, now: datetime, n_particles: int = 150_000, max_members: int = 3,
 
     e, e2 = fires.area_kg, fires.frp_kg
     params = {"dt_s": prm.dt, "k_h": prm.k_h, "v_dep": prm.v_dep, "burn_s": c.BURN_SECONDS,
+              "day_fire_factor": c.DAY_FIRE_FACTOR, "day_burn_ist": c.DAY_BURN_IST,
+              "lookback_h": LOOKBACK_H, "max_age_h": MAX_AGE_H,
               "n_per_arrival": n_per_arrival, "forward_over_backward": check,
               "whatif": WHATIF_LABEL, "n_assumed_events": n_assumed,
               "n_static_dropped": fires.n_static,

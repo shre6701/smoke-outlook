@@ -13,6 +13,16 @@ PM2.5 goes up". For every daily run (12:00 UTC) and each 24-hour window after it
 Benchmarks: persistence (the last 24 h measured), and CAMS total PM2.5 (same-day runs).
 
 The thresholds for "useful" were fixed before the results were seen (VERDICT_* below).
+
+Second target (added 15 Nov 2026, after the first result was weak, and fixed before any new
+result was seen). Total PM2.5 change also holds fireworks and weather-driven build-up, which
+a fire-smoke model cannot know. The weather-adjusted target therefore
+- leaves out days whose window, or the 24 h before it, includes a Diwali fireworks night;
+- removes from both the measured and the simulated change what the change in forecast
+  ventilation (boundary-layer height x wind speed, same forecast, point-in-time) explains,
+  in rank space (a partial rank correlation), and scores what is left.
+The same thresholds apply. Both targets are always reported; the verdict uses the adjusted
+one when ventilation is stored for at least 20 days, and says which it used.
 """
 
 import csv
@@ -33,6 +43,10 @@ SPIKE_QUANTILE = 0.75  # the top quarter of measured day-to-day rises are "spike
 # A city-season is "useful" for smoke arrival when, for the first 24 h:
 VERDICT_MIN_AUC = 0.65  # simulated rises pick out measured spikes at least this well
 VERDICT_CI_ABOVE = 0.0  # and the 90% interval of the change correlation is above zero
+# Diwali fireworks nights (first and last evening), as already listed under "Limits".
+FIREWORKS = {2024: (date(2024, 10, 31), date(2024, 11, 1)),
+             2025: (date(2025, 10, 20), date(2025, 10, 21))}  # fmt: skip
+FIREWORKS_FROM_UTC_H = 12  # 17:30 IST on the first evening, to the same hour after the last
 DSS_FILE = config.ROOT / "docs" / "ref" / "dss_delhi_stubble_share.csv"
 REPORT = config.ROOT / "docs" / "validation.md"
 
@@ -118,6 +132,36 @@ def fit_two(p, s, y) -> tuple[float, float, float]:
     return float(coef[0]), float(coef[1]), float(coef[2])
 
 
+def adjusted_scores(d_sim, obs_x) -> tuple[float, float]:
+    """(change correlation, spike AUC) after removing, in rank space, what the ventilation
+    change x explains from both the simulated and the measured change.
+    obs_x: two columns, measured change and ventilation change."""
+    d_sim, obs_x = np.asarray(d_sim, dtype=float), np.asarray(obs_x, dtype=float)
+    if len(d_sim) < 8:
+        return float("nan"), float("nan")
+    rx = rank(obs_x[:, 1])
+    res = []
+    for y in (rank(d_sim), rank(obs_x[:, 0])):
+        a, b = fit_line(rx, y, nonneg=False)
+        res.append(y - (a + b * rx))
+    rs, ro = res
+    if rs.std() == 0 or ro.std() == 0:
+        return float("nan"), float("nan")
+    return float(np.corrcoef(rs, ro)[0, 1]), auc(rs, ro >= np.quantile(ro, SPIKE_QUANTILE))
+
+
+def fireworks_hours(season: int, t0: datetime, n: int) -> np.ndarray:
+    """True for the hours of the Diwali fireworks nights and the mornings after."""
+    out = np.zeros(n, dtype=bool)
+    if season in FIREWORKS:
+        first, last = FIREWORKS[season]
+        a = datetime(first.year, first.month, first.day, FIREWORKS_FROM_UTC_H, tzinfo=UTC)
+        b = datetime(last.year, last.month, last.day, FIREWORKS_FROM_UTC_H, tzinfo=UTC)
+        i0, i1 = hours_between(t0, a), hours_between(t0, b + timedelta(days=1))
+        out[max(i0, 0) : max(i1, 0)] = True
+    return out
+
+
 def rmse(e) -> float:
     return float(np.sqrt(np.mean(np.square(e)))) if len(e) else float("nan")
 
@@ -170,10 +214,10 @@ def load_series(conn, season: int):
 def load_runs(conn, season: int, t0: datetime, n: int):
     """Per city: list of (run_at index, {col: hourly array aligned to the season hours})."""
     out = {k: {} for k in config.RECEPTORS}
-    for run_at, city, valid, a, b, w in conn.execute(
+    for run_at, city, valid, a, b, w, vent in conn.execute(
         """
         SELECT r.run_at, h.receptor, h.valid_at, h.pm25_ugm3, h.pm25_frp_ugm3,
-               h.pm25_whatif_ugm3
+               h.pm25_whatif_ugm3, h.vent_m2s
         FROM hindcast_hourly h JOIN hindcast_run r USING (run_id) WHERE r.season = %s
         """,
         (season,),
@@ -181,10 +225,13 @@ def load_runs(conn, season: int, t0: datetime, n: int):
         if city not in out:
             continue
         key = hours_between(t0, run_at.astimezone(UTC))
-        run = out[city].setdefault(key, {k: np.full(n, np.nan) for k in ("seen", "frp", "whatif")})
+        run = out[city].setdefault(
+            key, {k: np.full(n, np.nan) for k in ("seen", "frp", "whatif", "vent")}
+        )
         i = hours_between(t0, valid.astimezone(UTC))
         if 0 <= i < n:
             run["seen"][i], run["frp"][i], run["whatif"][i] = a, b, w
+            run["vent"][i] = np.nan if vent is None else vent
     return out
 
 
@@ -196,11 +243,11 @@ def window_mean(x: np.ndarray, i0: int, i1: int, min_cover: float = MIN_COVER) -
     return float(seg[ok].mean())
 
 
-def pairs(obs, cams, runs, lead: int) -> dict[str, np.ndarray]:
+def pairs(obs, cams, runs, lead: int, fireworks=None) -> dict[str, np.ndarray]:
     """One row per run day: window means after the run and for the 24 h before it."""
     h0, h1 = WINDOWS[lead]
     cols = {k: [] for k in ("day", "obs", "obs_prev", "cams", "seen", "whatif", "frp",
-                            "seen_prev")}  # fmt: skip
+                            "seen_prev", "vent", "vent_prev", "fireworks")}  # fmt: skip
     for k in sorted(runs):
         run = runs[k]
         # measured hour i covers [i, i+1); simulated value at index i is the arrival at i:00
@@ -209,6 +256,13 @@ def pairs(obs, cams, runs, lead: int) -> dict[str, np.ndarray]:
         cols["obs_prev"].append(window_mean(obs, k - 24, k))
         cols["cams"].append(window_mean(cams, k + h0, k + h1))
         cols["seen_prev"].append(window_mean(run["seen"], k - 24, k))
+        vent = run.get("vent", np.full(len(obs), np.nan))
+        cols["vent"].append(window_mean(vent, k + h0, k + h1))
+        cols["vent_prev"].append(window_mean(vent, k - 24, k))
+        fw = fireworks is not None and (
+            fireworks[max(k + h0, 0) : k + h1].any() or fireworks[max(k - 24, 0) : k].any()
+        )
+        cols["fireworks"].append(float(fw))
         for name in ("seen", "whatif", "frp"):
             cols[name].append(window_mean(run[name], k + h0, k + h1))
     return {k: np.array(v, dtype=float) for k, v in cols.items()}
@@ -248,7 +302,28 @@ def city_metrics(p: dict) -> dict:
     }
     lo = out["r_change_ci"][0]
     good = (out["auc_spike"] >= VERDICT_MIN_AUC) and np.isfinite(lo) and lo > VERDICT_CI_ABOVE
-    out["verdict"] = "useful" if good else "not reliable here"
+    out["verdict_total_change"] = "useful" if good else "not reliable here"
+    out["verdict"], out["verdict_basis"] = out["verdict_total_change"], "total PM2.5 change"
+    # Second target: fireworks days out, ventilation change removed (see module docstring).
+    nan = np.full(n, np.nan)
+    fireworks = q.get("fireworks", np.zeros(n)) >= 0.5
+    with np.errstate(invalid="ignore", divide="ignore"):
+        d_vent = np.log(q.get("vent", nan) / q.get("vent_prev", nan))
+    use = np.isfinite(d_vent) & ~fireworks
+    out["n_fireworks_days_dropped"] = int(fireworks.sum())
+    out["n_days_adjusted"] = int(use.sum())
+    if use.sum() >= 20:
+        ds, ox = d_sim[use], np.column_stack([d_obs[use], d_vent[use]])
+        out["r_change_adj"], out["auc_spike_adj"] = adjusted_scores(ds, ox)
+        out["r_change_adj_ci"] = block_ci(lambda a, b: adjusted_scores(a, b)[0], ds, ox)
+        out["auc_spike_adj_ci"] = block_ci(lambda a, b: adjusted_scores(a, b)[1], ds, ox)
+        # how much of the measured change still air alone goes with (negative = as expected)
+        out["r_change_ventilation_only"] = spearman(d_vent[use], d_obs[use])
+        lo = out["r_change_adj_ci"][0]
+        good = (np.isfinite(out["auc_spike_adj"]) and out["auc_spike_adj"] >= VERDICT_MIN_AUC
+                and np.isfinite(lo) and lo > VERDICT_CI_ABOVE)  # fmt: skip
+        out["verdict_adjusted"] = "useful" if good else "not reliable here"
+        out["verdict"], out["verdict_basis"] = out["verdict_adjusted"], "weather-adjusted change"
     return out
 
 
@@ -378,6 +453,7 @@ def compute(conn) -> dict:
     for season in SEASONS:
         t0, obs, ref, nst, cens, cams = load_series(conn, season)
         runs = load_runs(conn, season, t0, len(obs["Delhi"]))
+        fw = fireworks_hours(season, t0, len(obs["Delhi"]))
         t0s[season], all_obs[season], all_runs[season] = t0, obs, runs
         res["runs"][season] = len(runs["Delhi"])
         for city in config.RECEPTORS:
@@ -389,7 +465,7 @@ def compute(conn) -> dict:
                 "censored_station_hours": cens[city],
             }  # fmt: skip
             for lead in WINDOWS:
-                p = pairs(obs[city], cams[city], runs[city], lead)
+                p = pairs(obs[city], cams[city], runs[city], lead, fw)
                 P[(city, season, lead)] = p
                 res["city"][(city, season, lead)] = city_metrics(p)
             res["scale"][(city, season)] = scale_fit(P[(city, season, 1)])
@@ -427,6 +503,13 @@ def report(res: dict) -> str:
         "sources. A good score here means simulated smoke arrives when measured PM2.5 goes up; "
         "it does not mean the simulated amount is right. All simulated values are labelled "
         "simulated. Days are not independent, so ranges come from a 5-day block bootstrap.",
+        "",
+        "**Model version.** Day fires are spread over the afternoon (12:00 to 18:30 IST, peak "
+        f"16:30) and multiplied by {c.DAY_FIRE_FACTOR:.1f} for the fires the 13:30 satellite "
+        f"pass does not see; smoke is followed for {c.SMOKE_MAX_AGE_H // 24} days. The timing "
+        "and the factor come from Jethva (2026, doi:10.3390/rs18101506), published after "
+        "these seasons: the data in every run is point-in-time, this part of the method is "
+        "hindsight. One factor is used for all years and all places.",
         "",
         "## Measurements used",
         "",
@@ -467,6 +550,33 @@ def report(res: dict) -> str:
         "CAMS here is the same-day CAMS forecast of total PM2.5 (all sources), so it has an "
         "easier job than a fire-only model and is not a like-for-like rival.",
         "",
+        "## Skill per city, weather-adjusted target (first 24 hours)",
+        "",
+        "Added after the first result, fixed before any new result was seen. Days around the "
+        "Diwali fireworks nights are left out. What the change in forecast ventilation "
+        "(boundary-layer height × wind speed) explains is removed from both the measured and "
+        "the simulated change, so this asks: does simulated smoke rise when measured PM2.5 "
+        "rises by more than still air alone would give? Same thresholds. "
+        "Ventilation only = rank correlation of the ventilation change with the measured "
+        "change (negative = still air goes with a rise). The verdict column of the table "
+        "above uses this target where ventilation is stored.",
+        "",
+        "| City | Season | Days | Fireworks days left out | Ventilation only | "
+        "Adjusted change corr. (90% range) | Adjusted spike AUC (90% range) | Verdict on "
+        "total change | Verdict, adjusted |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    for (city, season, lead), m in res["city"].items():
+        if lead == 1 and "r_change_adj" in m:
+            L.append(
+                f"| {city} | {season} | {m['n_days_adjusted']} | {m['n_fireworks_days_dropped']} "
+                f"| {_f(m['r_change_ventilation_only'])} | {_f(m['r_change_adj'])} "
+                f"({_ci(m['r_change_adj_ci'])}) | {_f(m['auc_spike_adj'])} "
+                f"({_ci(m['auc_spike_adj_ci'])}) | {m['verdict_total_change']} | "
+                f"**{m['verdict_adjusted']}** |"
+            )
+    L += [
+        "",
         "## Skill by lead day",
         "",
         "Level correlation: rank correlation of simulated fire smoke (with the what-if repeats "
@@ -494,11 +604,13 @@ def report(res: dict) -> str:
         )
         + "), first 24 hours. Receptors are Indian cities only.",
         "",
-        "| Region | Season | Change corr. | Spike AUC | Cities useful |",
-        "|---|---|---|---|---|",
+        "| Region | Season | Change corr. | Spike AUC | Adjusted change corr. | "
+        "Adjusted spike AUC | Cities useful |",
+        "|---|---|---|---|---|---|---|",
     ]
     for (code, season), m in region_metrics(res).items():
         L.append(f"| {code} | {season} | {_f(m['r_change'])} | {_f(m['auc_spike'])} | "
+                 f"{_f(m['r_change_adj'])} | {_f(m['auc_spike_adj'])} | "
                  f"{m['n_useful']} of {m['n_cities']} |")  # fmt: skip
     L += [
         "",
@@ -580,11 +692,15 @@ def report(res: dict) -> str:
         "- Archive weather is stored every 3 hours (the live system uses every hour).",
         "- Archive fires are the reprocessed FIRMS product with an assumed 3-hour delay; the "
         "live feed of the day may have differed slightly.",
-        "- Two seasons, one run per day, three cities, all in the north. Shares from fires "
+        f"- Two seasons, one run per day, {len(config.RECEPTORS)} cities, all in the north. "
+        "Shares from fires "
         "abroad cannot be checked against stations in the source area.",
         "- Scores for one city-season rest on about 60 days that are not independent.",
         "- Measured PM2.5 includes fireworks (Diwali: 31 Oct – 1 Nov 2024, 20–21 Oct 2025), "
-        "traffic, industry and dust. None of these are in the model.",
+        "traffic, industry and dust. None of these are in the model. The weather-adjusted "
+        "target leaves the fireworks days out; the first table does not.",
+        "- The missed-fire factor and the afternoon timing rest on one study of Indian Punjab "
+        "and Haryana; they are applied to every fire in the domain.",
         "- Sources: OpenAQ (CPCB, US diplomatic posts via AirNow, low-cost networks); India Air "
         "Quality Database, XKDR Forum (CPCB, CC BY 4.0); NASA FIRMS; NOAA GFS; CAMS via "
         "Open-Meteo.",
@@ -606,6 +722,8 @@ def region_metrics(res: dict) -> dict:
                 out[(code, season)] = {
                     "r_change": float(np.nanmean([m["r_change"] for m in ms])),
                     "auc_spike": float(np.nanmean([m["auc_spike"] for m in ms])),
+                    "r_change_adj": float(np.mean([m.get("r_change_adj", np.nan) for m in ms])),
+                    "auc_spike_adj": float(np.mean([m.get("auc_spike_adj", np.nan) for m in ms])),
                     "n_useful": sum(m["verdict"] == "useful" for m in ms), "n_cities": len(ms),
                 }  # fmt: skip
     return out

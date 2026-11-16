@@ -29,6 +29,8 @@ Everything shown is simulated. Each city carries its result from the validation 
 
 The 2024 and 2025 burning seasons (1 Oct – 30 Nov) were replayed one day at a time, 122 runs, each using only the weather forecast and fires that had been published before the run. Full tables: [`docs/validation.md`](docs/validation.md).
 
+**Note (15 Nov 2026).** The model has changed since these numbers: day fires now burn through the afternoon and count for fires the 13:30 satellite pass misses, smoke is followed for 5 days, and Lucknow is a fourth city. The numbers below are from the earlier model and three cities. The new model has not been scored yet; until the hindcasts are re-run, treat it as not validated.
+
 **Result: weak. The simulation does not yet tell which days PM2.5 will rise, in any of the three cities.** Receptors are Indian cities only; fires abroad are still simulated as sources. The map says "not reliable here" for all of them.
 
 Scores for the first 24 hours after each run. Rise match = rank correlation between the simulated and the measured day-to-day change (1 = perfect, 0 = none). Spike score = how well a simulated rise picks out the biggest measured rises (1 = perfect, 0.5 = coin toss). "Useful" needed a spike score of 0.65 or more and a rise match clearly above zero; this rule was fixed before the results were seen.

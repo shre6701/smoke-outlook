@@ -24,6 +24,7 @@ from pathlib import Path
 import numpy as np
 
 from ingest import config, db
+from sim import constants as c
 from sim import fires as fires_mod
 from sim.engine import Grid, Params, Receptor, run_backward
 from sim.met import from_netcdf
@@ -39,7 +40,8 @@ FIRMS_SP = ["VIIRS_NOAA20_SP", "VIIRS_NOAA21_SP"]
 FIRMS_LATENCY = timedelta(hours=3)
 FIRMS_BASIS = "assumed_latency_3h"
 STATIC_HISTORY_DAYS = 48  # fires before the season, for the permanent-hot-spot filter
-HORIZON_H, LOOKBACK_H, NOWCAST_H, MAX_AGE_H = 72, 72, 24, 96
+HORIZON_H, NOWCAST_H = 72, 24
+LOOKBACK_H, MAX_AGE_H, REPEAT_H = c.SMOKE_LOOKBACK_H, c.SMOKE_MAX_AGE_H, c.FIRE_REPEAT_H
 SCHEMA = Path(__file__).parent / "hindcast.sql"
 
 
@@ -142,6 +144,19 @@ def cycles(conn, now: datetime) -> list[tuple[datetime, Path, datetime]]:
     return [r[:3] for r in out]
 
 
+def ventilation(met, receptors, arrivals) -> np.ndarray:
+    """Forecast boundary-layer height x 10 m wind speed (m²/s), [arrival, receptor]. Low
+    values mean still air that lets every kind of pollution build up. Weather only."""
+    lon = np.array([r.lon for r in receptors])
+    lat = np.array([r.lat for r in receptors])
+    z = np.full(len(lon), 10.0)
+    out = np.zeros((len(arrivals), len(lon)), dtype=np.float32)
+    for a, t in enumerate(arrivals):
+        u, v = met.wind(float(t), lon, lat, z)
+        out[a] = met.pbl(float(t), lon, lat) * np.hypot(u, v)
+    return out
+
+
 def simulate(conn, now: datetime, n_per_arrival: int = 500, seed: int = 0) -> dict | None:
     """Receptor numbers for one run time, from data published before `now` only.
     Returns None when no forecast cycle is stored for that time."""
@@ -166,13 +181,14 @@ def simulate(conn, now: datetime, n_per_arrival: int = 500, seed: int = 0) -> di
         "n_clusters": G, "emission_kg": float(fires.area_kg.sum()),
         "emission_frp_kg": float(fires.frp_kg.sum()), "valid": valid,
         "receptors": [r.name for r in receptors],
+        "vent": ventilation(met, receptors, arrivals),
     }  # fmt: skip
     if not G:  # a day without fires is a valid day with zero fire smoke
         zero = np.zeros((len(valid), len(receptors)), dtype=np.float32)
         return {**summary, "n_assumed": 0, "pm25": zero, "pm25_frp": zero, "whatif": zero,
                 "countries": [], "by_country": np.zeros((2, len(valid), len(receptors), 0)),
                 "runtime_s": time.perf_counter() - wall}  # fmt: skip
-    assumed = fires_mod.assume_future(fires, t0, now_s, t_end, LOOKBACK_H)
+    assumed = fires_mod.assume_future(fires, t0, now_s, t_end, REPEAT_H)
     everything = fires_mod.combine(fires, assumed)
     sources = fires_mod.sources_for(everything, t0)
     prm = Params(seed=seed)
@@ -233,7 +249,7 @@ def store(conn, season: int, r: dict, params: dict) -> int:
     with conn.cursor() as cur:
         with cur.copy(
             "COPY hindcast_hourly (run_id, receptor, valid_at, lead_h, pm25_ugm3, "
-            "pm25_frp_ugm3, pm25_whatif_ugm3) FROM STDIN"
+            "pm25_frp_ugm3, pm25_whatif_ugm3, vent_m2s) FROM STDIN"
         ) as copy:
             for a, valid in enumerate(r["valid"]):
                 lead = (valid - r["run_at"]).total_seconds() / 3600.0
@@ -247,6 +263,7 @@ def store(conn, season: int, r: dict, params: dict) -> int:
                             float(r["pm25"][a, b]),
                             float(r["pm25_frp"][a, b]),
                             float(r["whatif"][a, b]),
+                            None if r.get("vent") is None else float(r["vent"][a, b]),
                         )
                     )
         with cur.copy(
@@ -272,7 +289,10 @@ def _run_one(args) -> str:
         if r is None:
             return f"{now:%Y-%m-%d} SKIPPED (no forecast cycle stored)"
         store(conn, season, r, {"n_per_arrival": n_per_arrival, "gfs_step_h": GFS_STEP_H,
-                                "fires": FIRMS_SP, "fires_basis": FIRMS_BASIS})  # fmt: skip
+                                "fires": FIRMS_SP, "fires_basis": FIRMS_BASIS,
+                                "day_fire_factor": c.DAY_FIRE_FACTOR,
+                                "day_burn_ist": c.DAY_BURN_IST, "lookback_h": LOOKBACK_H,
+                                "max_age_h": MAX_AGE_H})  # fmt: skip
         peak = ", ".join(f"{n} {r['whatif'][:, i].max():.1f}" for i, n in enumerate(r["receptors"]))
         return (f"{now:%Y-%m-%d} GFS {r['gfs_init']:%d %HZ} {r['n_events']:5d} events "
                 f"{r['runtime_s']:4.0f} s | peak incl. what-if: {peak}")  # fmt: skip

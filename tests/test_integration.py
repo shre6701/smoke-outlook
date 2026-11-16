@@ -157,7 +157,7 @@ def test_status_flags_stale_and_empty_and_sets_exit_code(testdb, monkeypatch, ca
     monkeypatch.delenv("DATAGOV_API_KEY", raising=False)
     assert status.main() == 1  # everything empty
     out = capsys.readouterr().out
-    assert out.count("EMPTY") == 5 and "SKIPPED (no DATAGOV_API_KEY)" in out
+    assert out.count("EMPTY") == 4 and "SKIPPED (no DATAGOV_API_KEY)" in out
 
     now = datetime.now(UTC)
     pt = "ST_SetSRID(ST_MakePoint(77, 28), 4326)"
@@ -244,7 +244,10 @@ def test_sim_run_end_to_end(testdb, tmp_path, session_tz):
 
     conn = testdb(options=f"-c timezone={session_tz}")
     sim_run.ensure_schema(conn)
-    now = datetime.now(UTC).replace(microsecond=0)
+    # The latest 20:00 UTC (01:30 IST): fires seen 2 h earlier are night fires, which burn
+    # for one hour from the sighting. Day fires are covered in tests/test_sim.py.
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    now -= timedelta(hours=(now.hour - 20) % 24)
     init = (now - timedelta(hours=5)).replace(minute=0, second=0)
     prev = init - timedelta(hours=6)
     # Westerly wind 5 m/s in the newest cycle; the older cycle is calm.
@@ -257,9 +260,9 @@ def test_sim_run_end_to_end(testdb, tmp_path, session_tz):
     add_fire(conn, 28.61, 76.2, 50.0, now - timedelta(hours=2), now - timedelta(hours=1))
     add_fire(conn, 28.61, 76.21, 30.0, now - timedelta(hours=2), now - timedelta(hours=1))
     add_fire(conn, 28.61, 78.5, 60.0, now - timedelta(hours=2), now - timedelta(hours=1))
-    # Not allowed in this run: seen by us only after `now`, or older than 72 h.
+    # Not allowed in this run: seen by us only after `now`, or older than 120 h.
     add_fire(conn, 28.61, 76.5, 999.0, now - timedelta(hours=1), now + timedelta(hours=2))
-    add_fire(conn, 28.61, 76.5, 999.0, now - timedelta(hours=80), now - timedelta(hours=79))
+    add_fire(conn, 28.61, 76.5, 999.0, now - timedelta(hours=130), now - timedelta(hours=129))
     conn.commit()
 
     r = sim_run.run(conn, now, n_particles=4000, out_dir=tmp_path / "sim", n_per_arrival=200)
@@ -314,7 +317,7 @@ def test_sim_run_end_to_end(testdb, tmp_path, session_tz):
     import xarray as xr
 
     ds = xr.open_dataset(r["path"])
-    assert ds.pm25_fire.shape[1:] == (80, 100) and ds.footprint.shape == (4, 80, 100)
+    assert ds.pm25_fire.shape[1:] == (80, 120) and ds.footprint.shape == (4, 80, 120)
     assert float((ds.pm25_fire_whatif - ds.pm25_fire).min()) >= -1e-6
     assert "what-if" in ds.pm25_fire_whatif.attrs["label"]
     assert float(ds.pm25_fire.min()) >= 0 and not bool(ds.pm25_fire.isnull().any())

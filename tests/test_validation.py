@@ -63,6 +63,62 @@ def test_a_model_that_knows_the_rises_is_useful_and_noise_is_not():
     assert v.city_metrics(pairs(rng.random(61)))["verdict"] == "not reliable here"
 
 
+def test_weather_adjusted_target_gives_no_credit_for_still_air_alone():
+    """Measured PM2.5 = smoke + a build-up on still days + a fireworks night. A model that
+    knows the smoke stays useful on the adjusted target. A 'model' that only follows the
+    still air looks useful on total change but not once ventilation is removed."""
+    rng = np.random.default_rng(3)
+    n = 81
+    smoke = np.clip(rng.normal(1, 1, n).cumsum() % 7, 0, None)
+    vent = np.exp(rng.normal(8.0, 0.8, n))  # m²/s, changes from day to day
+    still = 8.0 - np.log(vent)
+    obs = 80 + 30 * smoke + 60 * still + rng.normal(0, 5, n)
+    obs[40] += 400.0  # fireworks
+    fireworks = np.zeros(n)
+    fireworks[40:42] = 1.0  # the night itself and the day that is compared with it
+
+    def pairs(sim, with_weather=True):
+        p = {"obs": obs[1:], "obs_prev": obs[:-1], "whatif": sim[1:], "seen": sim[1:],
+             "frp": sim[1:], "seen_prev": sim[:-1], "cams": np.full(n - 1, np.nan)}  # fmt: skip
+        if with_weather:
+            p |= {"vent": vent[1:], "vent_prev": vent[:-1], "fireworks": fireworks[1:]}
+        return p
+
+    good = v.city_metrics(pairs(smoke))
+    assert good["verdict_basis"] == "weather-adjusted change"
+    assert good["n_fireworks_days_dropped"] == 2 and good["n_days_adjusted"] == n - 3
+    assert good["verdict_adjusted"] == "useful" and good["verdict"] == "useful"
+    assert good["r_change_adj"] > good["r_change"]  # weather noise removed: clearer signal
+    assert good["r_change_ventilation_only"] < -0.3  # more ventilation, lower PM2.5
+    air_only = v.city_metrics(pairs(still))
+    assert air_only["verdict_total_change"] == "useful"
+    assert air_only["verdict_adjusted"] == "not reliable here"
+    assert air_only["verdict"] == "not reliable here"
+    assert abs(air_only["r_change_adj"]) < 0.2
+    # Runs stored before ventilation was kept fall back to the first target, and say so.
+    old = v.city_metrics(pairs(smoke, with_weather=False))
+    assert old["verdict_basis"] == "total PM2.5 change" and "r_change_adj" not in old
+
+
+def test_fireworks_days_are_flagged_for_the_window_and_the_day_before_it():
+    t0 = datetime(2024, 9, 28, tzinfo=UTC)
+    fw = v.fireworks_hours(2024, t0, 24 * 70)
+    first = v.hours_between(t0, datetime(2024, 10, 31, 12, tzinfo=UTC))
+    assert fw.sum() == 48 and fw[first] and not fw[first - 1] and not fw[first + 48]
+    assert not v.fireworks_hours(2023, t0, 100).any()  # a season without listed dates
+    obs = np.full(24 * 70, 50.0)
+    blank = {k: np.full(len(obs), 1.0) for k in ("seen", "frp", "whatif", "vent")}
+    runs = {v.hours_between(t0, datetime(2024, 10, d, 12, tzinfo=UTC)): blank
+            for d in (29, 30, 31)}  # fmt: skip
+    runs[v.hours_between(t0, datetime(2024, 11, 2, 12, tzinfo=UTC))] = blank
+    runs[v.hours_between(t0, datetime(2024, 11, 3, 12, tzinfo=UTC))] = blank
+    p = v.pairs(obs, obs, runs, 1, fw)
+    # 29 Oct: clear. 30 Oct: clear for day 1. 31 Oct: fireworks in its window.
+    # 2 Nov: fireworks in the 24 h before it. 3 Nov: clear again.
+    assert list(p["fireworks"]) == [0.0, 0.0, 1.0, 1.0, 0.0]
+    assert v.pairs(obs, obs, runs, 2, fw)["fireworks"][1] == 1.0  # 30 Oct, second day ahead
+
+
 # ---------- hindcast ----------
 
 

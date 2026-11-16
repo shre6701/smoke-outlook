@@ -35,8 +35,10 @@ CREATE TABLE IF NOT EXISTS hindcast_hourly (
     pm25_ugm3        real NOT NULL,
     pm25_frp_ugm3    real NOT NULL,
     pm25_whatif_ugm3 real NOT NULL,
+    vent_m2s         real,   -- forecast boundary-layer height x 10 m wind speed (weather only)
     PRIMARY KEY (run_id, receptor, valid_at)
 );
+ALTER TABLE hindcast_hourly ADD COLUMN IF NOT EXISTS vent_m2s real;
 CREATE INDEX IF NOT EXISTS hindcast_hourly_valid_idx ON hindcast_hourly (receptor, valid_at);
 
 -- The same, split by where the fires were (country code, 'disputed', 'other').

@@ -31,12 +31,15 @@ def client(testdb, tmp_path):
             "INSERT INTO place (name, pop_max, geom) VALUES (%s, %s, "
             "ST_SetSRID(ST_MakePoint(%s, %s), 4326))", (name, pop, lon, lat),
         )  # fmt: skip
-    now = datetime.now(UTC).replace(microsecond=0)
+    # The latest 20:00 UTC (01:30 IST), so the fires below are night fires at any clock time.
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    now -= timedelta(hours=(now.hour - 20) % 24)
     init = (now - timedelta(hours=5)).replace(minute=0, second=0)
     write_cycle(tmp_path / "new.nc", init, u=5.0)
     add_cycle(conn, tmp_path / "new.nc", init, init + timedelta(hours=4))
     add_fire(conn, 28.61, 76.2, 50.0, now - timedelta(hours=2), now - timedelta(hours=1))
-    add_fire(conn, 28.9, 78.4, 20.0, now - timedelta(hours=2), now - timedelta(hours=1))
+    # In box B (code PK), 15 km upwind of Delhi, so the ledger has a source abroad too.
+    add_fire(conn, 28.61, 77.05, 20.0, now - timedelta(hours=2), now - timedelta(hours=1))
     conn.commit()
     sim_run.run(conn, now, n_particles=3000, out_dir=tmp_path / "sim", n_per_arrival=120)
     main._open.cache_clear()

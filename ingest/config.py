@@ -6,13 +6,14 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
 
 # v1 domain (SPEC §0): west, south, east, north
-WEST, SOUTH, EAST, NORTH = 70.0, 26.0, 80.0, 34.0
+WEST, SOUTH, EAST, NORTH = 70.0, 26.0, 82.0, 34.0
 
 # Receptors are Indian cities only (SPEC §0). Fires anywhere in the domain are sources.
 RECEPTORS = {
     "Delhi": (28.61, 77.21),
     "Chandigarh": (30.73, 76.78),
     "Amritsar": (31.63, 74.87),
+    "Lucknow": (26.85, 80.95),
 }
 # Reporting region of each receptor (SPEC §0: North now; East, West, South in v3).
 REGION = dict.fromkeys(RECEPTORS, "North")
