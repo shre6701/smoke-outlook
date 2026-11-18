@@ -165,7 +165,9 @@ def ingest_cycle(conn, init: datetime, step_hours: int, max_fxx: int = MAX_FXX) 
          str(path.relative_to(config.ROOT)), lon0, lat0, lon1, lat1),
     )  # fmt: skip
     conn.commit()
-    for f in RAW_DIR.rglob("*"):  # raw GRIB subsets are not needed after cropping
+    # Raw GRIB subsets are not needed after cropping. Only this process's own download folder
+    # (RAW_DIR/gfs): hindcast workers keep theirs in sub-folders of the shared RAW_DIR.
+    for f in (RAW_DIR / "gfs").rglob("*"):
         if f.is_file():
             f.unlink()
     return len(times)

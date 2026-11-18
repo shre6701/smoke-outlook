@@ -103,7 +103,9 @@ def _fetch_gfs_part(args) -> tuple[int, list[str]]:
     part, inits = args
     from weather import gfs
 
-    gfs.RAW_DIR = gfs.RAW_DIR / f"p{part}"  # each worker cleans only its own raw files
+    # Each worker cleans only its own raw files; the year keeps two seasons fetched at the
+    # same time apart.
+    gfs.RAW_DIR = gfs.RAW_DIR / f"p{inits[0]:%Y}_{part}"
     conn = db.connect()
     done, failed = 0, []
     for init in inits:

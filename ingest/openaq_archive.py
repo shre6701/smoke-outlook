@@ -12,6 +12,7 @@ values. Credit: OpenAQ, with CPCB, the US State Department / AirNow and the sens
 import json
 import os
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 
@@ -63,8 +64,16 @@ def _download(job: tuple[int, date]) -> int:
     path = OUT_DIR / "records" / rel / f"location-{loc}-{day:%Y%m%d}.csv.gz"
     if path.exists():
         return 0
-    r = requests.get(f"{ARCHIVE}/{rel}/{path.name}", headers={"User-Agent": USER_AGENT},
-                     timeout=60)  # fmt: skip
+    for attempt in range(4):  # the archive sometimes answers 500 or 503 under load
+        try:
+            r = requests.get(f"{ARCHIVE}/{rel}/{path.name}", headers={"User-Agent": USER_AGENT},
+                             timeout=60)  # fmt: skip
+            if r.status_code < 500:
+                break
+        except (requests.ConnectionError, requests.Timeout):
+            if attempt == 3:
+                raise
+        time.sleep(2**attempt)
     if r.status_code in (403, 404):  # no data from this location on this day
         return 0
     r.raise_for_status()

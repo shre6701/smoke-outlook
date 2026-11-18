@@ -223,7 +223,15 @@ Target machine: Windows + WSL2, 16 GB RAM, no GPU, 20-50 GB free disk.
 - Missed late-afternoon fires; emissions per fire; smoke older than 3 days; a better test target than total PM2.5 change.
 - Then Stage 3b (fire type) as added to STAGES.md.
 
-## Model fixes after Stage 3 (code done 2026-11-15; re-run started 2026-11-16, NOT finished)
+## Model fixes after Stage 3 (code done 2026-11-15; re-scored 2026-11-18) — RESULT: STILL WEAK
+
+**Re-score (2026-11-18)**
+- 2024 and 2025 hindcasts re-run (point-in-time GFS 06Z), station archive re-downloaded (retries added for archive 500/503 errors), `sim.validate` run. Tables in `docs/validation.md`.
+- 0 of 4 cities "useful" in either season, on either target. Region mean spike AUC 0.49–0.53.
+- Simulation + persistence: −21% to +7% error change, no reliable gain.
+- Emission scale fit: Delhi 7–16×, Chandigarh 18×, Amritsar 0.8–2.5×: too low in the east, about right near the border.
+- Ledger share moves a lot day to day (Amritsar median 24–41 points).
+- CAMS comparison shows n/a: CAMS was not loaded into the new database.
 
 **Works** (all 74 tests pass, database tests included, 2026-11-16)
 - Late-afternoon fires: day fires burn 12:00–18:30 IST (peak 16:30) and count ×2.5 for unseen fires. Same in the live run and the hindcast.
@@ -232,17 +240,16 @@ Target machine: Windows + WSL2, 16 GB RAM, no GPU, 20-50 GB free disk.
 - Lucknow is a receptor; domain to 82°E.
 
 **Thin**
-- Nothing has been scored on real data yet. C: now has 26 GB free; the database is new and empty, boundaries loaded, 2024 fetch and station archive downloads running.
 - Four database tests were stale since the India-centric change (never run with a database): status count, a ledger fixture with no source abroad upwind, old grid width, 72 h fire window. Fixed in the tests; no model code changed. End-to-end tests now use a fixed night-time clock so they do not depend on the hour they run.
-- No Java on this machine: the Spark station-archive job needs Java 17+ (no sudo here).
+- Java 17 JRE unpacked in the user's home (no sudo); set JAVA_HOME before the Spark job.
 - Timing and factor rest on one 2026 study of Indian Punjab and Haryana; hindsight for 2024–2025.
 - Live run time with 5-day smoke is not measured against the 10-minute budget.
 - Emission per detection unchanged; season total not yet checked against inventories.
-- README skill numbers are from the earlier model (3 cities) and say so. The map reads skill from the database, which is empty, so it shows "not yet validated" until the re-score.
+- README now shows the re-score; earlier tables kept below it for comparison. The map reads the new skill from the database ("not reliable here" for all 4 cities).
 
 **Next**
-- Free about 15 GB on C:, then: `docker compose up -d`, ingest boundaries, `sim.hindcast fetch` and `run` for 2024 and 2025 (4 cities), station archive (now with Lucknow), `sim.validate`.
-- Before the full re-run: run the database tests; compare 5-day and 7-day smoke on a few days; check the season emission total; time one live run.
+- Load CAMS for 2024–2025 into the new database and re-run `sim.validate` so the benchmark column is filled.
+- Still not done: compare 5-day and 7-day smoke on a few days; check the season emission total; time one live run.
 - Then Stage 3b.
 
 ## Later
