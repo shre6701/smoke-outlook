@@ -253,7 +253,14 @@ Target machine: Windows + WSL2, 16 GB RAM, no GPU, 20-50 GB free disk.
 **Next**
 - Check the Liu et al. 2020 scope (area, months) before changing emissions; if it holds, a burn-completeness or area check on the FINN numbers.
 - Find out why weather-adjusted CO goes against simulated smoke (look at it unadjusted, labelled exploratory, not a new target).
-- The three targets agree: day-to-day timing is the weak part, not only the amount. Check plume arrival on a few well-known smoke days (wind path vs station rise) before tuning anything.
+- Check the weather input itself: GFS forecast wind at each city against wind measured at the same stations (OpenAQ files hold wind_speed and wind_direction for many CPCB stations). Wrong wind direction would explain smoke on the wrong days.
+
+**Timing diagnostics (2026-11-18, exploratory, not targets; scratch scripts, not in the repo)**
+- No time shift: scores at offsets of −2..+2 days are no better than at 0 in a consistent way.
+- Not Monte Carlo noise: same run with another seed differs by 1–2%; simulated 24 h means are as persistent day to day as measured ones (lag-1 rank autocorrelation 0.63–0.90 vs 0.60–0.88).
+- Not the change definition: what-if vs past-seen (used), seen vs past-seen, and run-to-run change all score alike. Their day-to-day sign flips are normal for differences of a persistent series.
+- Biggest misses: Delhi 2024-11-17 (+255 µg/m³ measured, simulated +0.95), Delhi 2025-11-10 (+81 measured, simulated −17, lowest of the season).
+- So the model is stable but puts smoke on different days than the stations see it. Left: weather input (wind), boundary-layer mixing, or fire smoke not driving day-to-day changes in these cities.
 - Still not done: time one live run.
 - Then Stage 3b.
 
