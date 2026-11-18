@@ -51,6 +51,29 @@ Added after the first result, fixed before any new result was seen. Days around 
 | Amritsar | 2025 | 47 | 3 | -0.04 | 0.23 (-0.01 to 0.47) | 0.61 (0.43 to 0.80) | not reliable here | **not reliable here** |
 | Lucknow | 2025 | 53 | 3 | -0.08 | 0.13 (-0.09 to 0.33) | 0.57 (0.45 to 0.72) | not reliable here | **not reliable here** |
 
+## Skill per city, smoke tracers (first 24 hours)
+
+Added 18 Nov 2026, rules fixed before any tracer result was seen. Total PM2.5 also holds traffic, dust and still-air build-up, so two measured signals that follow smoke more closely are scored, from the same reference stations. CO: carbon monoxide, which fires give off (traffic too); the ventilation change is removed as above. Fine fraction: PM2.5 ÷ PM10, which rises with smoke and falls with dust; a ratio is not diluted by still air, so nothing is removed. Fireworks days are left out of both. Same thresholds. These do not change the map's verdict.
+
+| City | Season | Tracer | Days | Change corr. (90% range) | Spike AUC (90% range) | Verdict |
+|---|---|---|---|---|---|---|
+| Delhi | 2024 | CO, weather-adjusted | 58 | -0.34 (-0.57 to -0.16) | 0.32 (0.18 to 0.49) | **not reliable here** |
+| Delhi | 2024 | fine fraction | 58 | 0.25 (-0.03 to 0.53) | 0.59 (0.43 to 0.74) | **not reliable here** |
+| Chandigarh | 2024 | CO, weather-adjusted | 58 | 0.19 (0.01 to 0.35) | 0.60 (0.47 to 0.71) | **not reliable here** |
+| Chandigarh | 2024 | fine fraction | 58 | -0.12 (-0.35 to 0.08) | 0.56 (0.43 to 0.68) | **not reliable here** |
+| Amritsar | 2024 | CO, weather-adjusted | 58 | -0.19 (-0.40 to 0.05) | 0.33 (0.14 to 0.52) | **not reliable here** |
+| Amritsar | 2024 | fine fraction | 58 | 0.06 (-0.14 to 0.30) | 0.53 (0.41 to 0.69) | **not reliable here** |
+| Lucknow | 2024 | CO, weather-adjusted | 58 | -0.11 (-0.25 to 0.11) | 0.52 (0.38 to 0.63) | **not reliable here** |
+| Lucknow | 2024 | fine fraction | 58 | 0.13 (-0.02 to 0.36) | 0.59 (0.49 to 0.76) | **not reliable here** |
+| Delhi | 2025 | CO, weather-adjusted | 56 | -0.10 (-0.33 to 0.15) | 0.33 (0.18 to 0.51) | **not reliable here** |
+| Delhi | 2025 | fine fraction | 56 | 0.08 (-0.05 to 0.17) | 0.46 (0.33 to 0.60) | **not reliable here** |
+| Chandigarh | 2025 | CO, weather-adjusted | 53 | -0.23 (-0.43 to -0.05) | 0.38 (0.24 to 0.54) | **not reliable here** |
+| Chandigarh | 2025 | fine fraction | 53 | -0.10 (-0.29 to 0.12) | 0.50 (0.39 to 0.64) | **not reliable here** |
+| Amritsar | 2025 | CO, weather-adjusted | 46 | -0.21 (-0.41 to 0.04) | 0.40 (0.26 to 0.58) | **not reliable here** |
+| Amritsar | 2025 | fine fraction | 46 | 0.30 (0.09 to 0.50) | 0.59 (0.45 to 0.73) | **not reliable here** |
+| Lucknow | 2025 | CO, weather-adjusted | 53 | -0.31 (-0.58 to -0.05) | 0.31 (0.18 to 0.51) | **not reliable here** |
+| Lucknow | 2025 | fine fraction | 53 | 0.08 (-0.13 to 0.33) | 0.50 (0.40 to 0.61) | **not reliable here** |
+
 ## Skill by lead day
 
 Level correlation: rank correlation of simulated fire smoke (with the what-if repeats for future fires) with measured PM2.5. Persistence = the previous 24 h measured.

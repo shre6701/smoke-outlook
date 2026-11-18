@@ -100,6 +100,44 @@ def test_weather_adjusted_target_gives_no_credit_for_still_air_alone():
     assert old["verdict_basis"] == "total PM2.5 change" and "r_change_adj" not in old
 
 
+def test_tracer_target_rewards_smoke_drops_fireworks_and_gives_no_credit_for_still_air():
+    """Measured CO = smoke + still-air build-up + a fireworks night. Same rules as the second
+    target; the fine fraction (a ratio) is scored without the ventilation step."""
+    rng = np.random.default_rng(5)
+    n = 81
+    smoke = np.clip(rng.normal(1, 1, n).cumsum() % 7, 0, None)
+    vent = np.exp(rng.normal(8.0, 0.8, n))
+    still = 8.0 - np.log(vent)
+    co = 1.0 + 0.3 * smoke + 0.6 * still + rng.normal(0, 0.05, n)
+    co[40] += 5.0
+    fireworks = np.zeros(n)
+    fireworks[40:42] = 1.0
+
+    def pairs(sim, tracer):
+        return {"obs": tracer[1:], "obs_prev": tracer[:-1], "whatif": sim[1:],
+                "seen_prev": sim[:-1], "vent": vent[1:], "vent_prev": vent[:-1],
+                "fireworks": fireworks[1:]}  # fmt: skip
+
+    good = v.tracer_metrics(pairs(smoke, co), adjust=True)
+    assert good["verdict"] == "useful" and good["n_days"] == n - 3
+    assert v.tracer_metrics(pairs(still, co), adjust=True)["verdict"] == "not reliable here"
+    ratio = 0.5 + 0.05 * smoke + rng.normal(0, 0.01, n)
+    assert v.tracer_metrics(pairs(smoke, ratio), adjust=False)["verdict"] == "useful"
+    assert v.tracer_metrics(pairs(rng.random(n), ratio), adjust=False)["verdict"] == (
+        "not reliable here"
+    )
+    few = pairs(smoke, np.where(np.arange(n) < 15, co, np.nan))
+    assert v.tracer_metrics(few, adjust=True)["verdict"] == "too few days with measurements"
+
+
+def test_openaq_co_labelled_ppb_is_read_by_its_values():
+    from spark_jobs import station_archive as sa
+
+    assert sa.co_to_mgm3([0.8, 1.1, 2.4]) == 1.0  # CPCB values: mg/m³ whatever the label
+    assert sa.co_to_mgm3([600.0, 900.0, 1500.0]) == pytest.approx(0.001145)  # real ppb
+    assert sa.co_to_mgm3([]) == 1.0
+
+
 def test_fireworks_days_are_flagged_for_the_window_and_the_day_before_it():
     t0 = datetime(2024, 9, 28, tzinfo=UTC)
     fw = v.fireworks_hours(2024, t0, 24 * 70)

@@ -9,7 +9,8 @@ Two archives, cleaned the same way and kept only for the receptor city boxes:
   used for the 2024 season. Its US Embassy rows are skipped (already in OpenAQ).
 
 Cleaning rules:
-- PM2.5 only; negative values and error codes are dropped;
+- PM2.5, plus CO and PM10 as smoke tracers (table archive_tracer_hourly); negative values
+  and error codes are dropped;
 - a value at or above the instrument limit (CENSOR_UGM3) is kept and flagged `censored`:
   the true value is at least that high (SPEC §3: treat as censored, not missing);
 - hours are UTC hour starts. OpenAQ stamps the end of the hour. XKDR times are naive Indian
@@ -56,7 +57,32 @@ CREATE TABLE IF NOT EXISTS archive_pm25_hourly (
     FOREIGN KEY (source, station_id) REFERENCES archive_station
 );
 CREATE INDEX IF NOT EXISTS archive_pm25_hourly_hour_idx ON archive_pm25_hourly (hour_utc);
+-- Smoke tracers from the same stations (validation only): CO in mg/m³, PM10 in µg/m³.
+CREATE TABLE IF NOT EXISTS archive_tracer_hourly (
+    source      text NOT NULL,
+    station_id  text NOT NULL,
+    hour_utc    timestamptz NOT NULL,
+    parameter   text NOT NULL CHECK (parameter IN ('co', 'pm10')),
+    value       real NOT NULL,
+    n_readings  integer NOT NULL,
+    PRIMARY KEY (source, station_id, hour_utc, parameter),
+    FOREIGN KEY (source, station_id) REFERENCES archive_station
+);
 """
+
+# Tracers: OpenAQ parameter, XKDR parameter_name, highest valid value. OpenAQ labels CPCB CO
+# as ppb while the values are mg/m³ (median about 1); see co_to_mgm3.
+TRACERS = {"co": ("co", "CO", 1e5), "pm10": ("pm10", "PM10", MAX_VALID_UGM3)}
+CO_PPB_MEDIAN_ABOVE = 50.0  # a station whose CO median is above this reports real ppb
+CO_MG_PER_PPB = 0.001145  # mg/m³ per ppb at 25 °C
+
+
+def co_to_mgm3(values: list[float]) -> float:
+    """Factor that turns one station's CO values into mg/m³, judged from their median."""
+    if not values:
+        return 1.0
+    med = sorted(values)[len(values) // 2]
+    return CO_MG_PER_PPB if med > CO_PPB_MEDIAN_ABOVE else 1.0
 
 
 def java_home() -> str | None:
@@ -85,31 +111,31 @@ def session():
     )
 
 
-def _hourly(readings):
+def _hourly(readings, name: str = "pm25_ugm3", max_valid: float = MAX_VALID_UGM3):
     """readings: station_id, epoch (s, UTC, inside the hour the reading belongs to), v.
     Epoch seconds, not timestamps: collected timestamps come back in the machine's local time
     zone, which repeats an hour when its clocks change."""
     from pyspark.sql import functions as F
 
-    ok = readings.where(
-        F.col("epoch").isNotNull() & (F.col("v") >= 0) & (F.col("v") <= MAX_VALID_UGM3)
-    )
+    ok = readings.where(F.col("epoch").isNotNull() & (F.col("v") >= 0) & (F.col("v") <= max_valid))
     hour = (F.floor(F.col("epoch") / 3600) * 3600).alias("hour_epoch")
     return ok.groupBy("station_id", hour).agg(
-        F.avg("v").alias("pm25_ugm3"),
+        F.avg("v").alias(name),
         F.count("*").cast("int").alias("n_readings"),
         (F.max("v") >= CENSOR_UGM3).alias("censored"),
     )
 
 
-def openaq_hourly(spark, records: Path = OPENAQ_RECORDS):
+def openaq_hourly(spark, records: Path = OPENAQ_RECORDS, tracer: str | None = None):
+    """Hourly PM2.5 per station, or with `tracer` ('co' | 'pm10') that pollutant as `value`."""
     from pyspark.sql import functions as F
 
+    param, _, max_valid = TRACERS[tracer] if tracer else ("pm25", None, MAX_VALID_UGM3)
     raw = (
         spark.read.option("header", True)
         .option("recursiveFileLookup", True)
         .csv(str(records))
-        .where(F.col("parameter") == "pm25")
+        .where(F.col("parameter") == param)
     )
     # A reading stamped 01:00 covers 00:00-01:00: put it in the hour that starts at 00:00.
     return _hourly(
@@ -117,7 +143,9 @@ def openaq_hourly(spark, records: Path = OPENAQ_RECORDS):
             F.col("location_id").cast("string").alias("station_id"),
             (F.unix_timestamp(F.to_timestamp("datetime")) - 1).alias("epoch"),
             F.col("value").cast("double").alias("v"),
-        )
+        ),
+        "value" if tracer else "pm25_ugm3",
+        max_valid,
     )
 
 
@@ -137,11 +165,13 @@ def xkdr_stations(spark, xkdr_dir: Path = XKDR_DIR) -> list[dict]:
     return out
 
 
-def xkdr_hourly(spark, station_ids: list[str], xkdr_dir: Path = XKDR_DIR):
+def xkdr_hourly(spark, station_ids: list[str], xkdr_dir: Path = XKDR_DIR,
+                tracer: str | None = None):  # fmt: skip
     from pyspark.sql import functions as F
 
+    _, param, max_valid = TRACERS[tracer] if tracer else (None, "PM2.5", MAX_VALID_UGM3)
     raw = spark.read.parquet(str(xkdr_dir / "measurements")).where(
-        (F.col("parameter_name") == "PM2.5") & F.col("station_id").isin(station_ids)
+        (F.col("parameter_name") == param) & F.col("station_id").isin(station_ids)
     )
     # The session time zone is UTC, so the naive IST clock time reads as UTC: shift it back.
     return _hourly(
@@ -149,7 +179,9 @@ def xkdr_hourly(spark, station_ids: list[str], xkdr_dir: Path = XKDR_DIR):
             "station_id",
             (F.unix_timestamp("collected_at") - IST_OFFSET_S).alias("epoch"),
             F.col("value").cast("double").alias("v"),
-        )
+        ),
+        "value" if tracer else "pm25_ugm3",
+        max_valid,
     )
 
 
@@ -163,16 +195,27 @@ def main() -> int:
         for s in json.loads(OPENAQ_LOCATIONS.read_text())
     ]
     rows = [("openaq", r) for r in openaq_hourly(spark).collect()]
+    tracer_rows = [("openaq", t, r) for t in TRACERS
+                   for r in openaq_hourly(spark, tracer=t).collect()]  # fmt: skip
     if (XKDR_DIR / "measurements").exists():
         xs = xkdr_stations(spark)
+        ids = [s["station_id"] for s in xs]
         stations += [{**s, "source": "xkdr"} for s in xs]
-        rows += [("xkdr", r) for r in xkdr_hourly(spark, [s["station_id"] for s in xs]).collect()]
+        rows += [("xkdr", r) for r in xkdr_hourly(spark, ids).collect()]
+        tracer_rows += [("xkdr", t, r) for t in TRACERS
+                        for r in xkdr_hourly(spark, ids, tracer=t).collect()]  # fmt: skip
     spark.stop()
+
+    co_vals: dict[str, list[float]] = {}
+    for source, t, r in tracer_rows:
+        if t == "co" and source == "openaq":
+            co_vals.setdefault(r["station_id"], []).append(r["value"])
+    co_factor = {sid: co_to_mgm3(v) for sid, v in co_vals.items()}
 
     conn = db.connect()
     db.ensure_schema(conn)
     conn.execute(SCHEMA)
-    conn.execute("TRUNCATE archive_pm25_hourly, archive_station")
+    conn.execute("TRUNCATE archive_pm25_hourly, archive_tracer_hourly, archive_station")
     for s in stations:
         conn.execute(
             """
@@ -197,6 +240,20 @@ def main() -> int:
                 copy.write_row((source, r["station_id"],
                                 datetime.fromtimestamp(r["hour_epoch"], UTC), r["pm25_ugm3"],
                                 r["n_readings"], r["censored"]))  # fmt: skip
+    with (
+        conn.cursor() as cur,
+        cur.copy(
+            "COPY archive_tracer_hourly (source, station_id, hour_utc, parameter, value, "
+            "n_readings) FROM STDIN"
+        ) as copy,
+    ):
+        for source, t, r in tracer_rows:
+            if (source, r["station_id"]) in known:
+                openaq_co = t == "co" and source == "openaq"
+                f = co_factor.get(r["station_id"], 1.0) if openaq_co else 1.0
+                copy.write_row((source, r["station_id"],
+                                datetime.fromtimestamp(r["hour_epoch"], UTC), t, r["value"] * f,
+                                r["n_readings"]))  # fmt: skip
     conn.commit()
     summary = conn.execute(
         """

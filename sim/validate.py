@@ -211,6 +211,41 @@ def load_series(conn, season: int):
     return t0, obs, ref, nst, cens, cams
 
 
+TRACER_SQL = {
+    # CO, mg/m³: median of the reference stations reporting that hour
+    "co": """
+        SELECT s.city, t.hour_utc, percentile_cont(0.5) WITHIN GROUP (ORDER BY t.value)
+        FROM archive_tracer_hourly t JOIN archive_station s USING (source, station_id)
+        WHERE t.parameter = 'co' AND s.is_reference AND t.hour_utc >= %s AND t.hour_utc < %s
+        GROUP BY 1, 2""",
+    # fine fraction PM2.5/PM10: per station-hour ratio, then the median of the stations.
+    # PM10 below 5 µg/m³ or a ratio above 1.2 is an instrument mismatch, not air.
+    "fine_fraction": """
+        SELECT s.city, p.hour_utc, percentile_cont(0.5) WITHIN GROUP (ORDER BY
+               p.pm25_ugm3 / t.value)
+        FROM archive_pm25_hourly p
+        JOIN archive_tracer_hourly t ON t.source = p.source AND t.station_id = p.station_id
+             AND t.hour_utc = p.hour_utc AND t.parameter = 'pm10'
+        JOIN archive_station s ON s.source = p.source AND s.station_id = p.station_id
+        WHERE s.is_reference AND NOT p.censored AND t.value >= 5
+          AND p.pm25_ugm3 <= 1.2 * t.value AND p.hour_utc >= %s AND p.hour_utc < %s
+        GROUP BY 1, 2""",
+}
+TRACER_ADJUST = {"co": True, "fine_fraction": False}  # remove the ventilation change?
+
+
+def load_tracers(conn, t0: datetime, n: int) -> dict[str, dict[str, np.ndarray]]:
+    """Hourly smoke-tracer arrays per city over the season (third target)."""
+    out = {}
+    for name, sql in TRACER_SQL.items():
+        arr = {k: np.full(n, np.nan) for k in config.RECEPTORS}
+        for city, hour, v in conn.execute(sql, (t0, t0 + timedelta(hours=n))).fetchall():
+            if city in arr:
+                arr[city][hours_between(t0, hour.astimezone(UTC))] = v
+        out[name] = arr
+    return out
+
+
 def load_runs(conn, season: int, t0: datetime, n: int):
     """Per city: list of (run_at index, {col: hourly array aligned to the season hours})."""
     out = {k: {} for k in config.RECEPTORS}
@@ -325,6 +360,37 @@ def city_metrics(p: dict) -> dict:
         out["verdict_adjusted"] = "useful" if good else "not reliable here"
         out["verdict"], out["verdict_basis"] = out["verdict_adjusted"], "weather-adjusted change"
     return out
+
+
+def tracer_metrics(p: dict, adjust: bool) -> dict:
+    """Third target: does a simulated rise come with a rise in a smoke tracer? Fireworks days
+    out; with `adjust`, the ventilation change is removed as in the second target."""
+    fireworks = p["fireworks"] >= 0.5
+    ok = (np.isfinite(p["obs"]) & np.isfinite(p["obs_prev"]) & np.isfinite(p["whatif"])
+          & np.isfinite(p["seen_prev"]) & ~fireworks)  # fmt: skip
+    if adjust:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            d_vent = np.log(p["vent"] / p["vent_prev"])
+        ok &= np.isfinite(d_vent)
+    n = int(ok.sum())
+    if n < 20:
+        return {"n_days": n, "verdict": "too few days with measurements"}
+    d_obs = (p["obs"] - p["obs_prev"])[ok]
+    d_sim = (p["whatif"] - p["seen_prev"])[ok]
+    if adjust:
+        ox = np.column_stack([d_obs, d_vent[ok]])
+        r, a = adjusted_scores(d_sim, ox)
+        r_ci = block_ci(lambda x, y: adjusted_scores(x, y)[0], d_sim, ox)
+        a_ci = block_ci(lambda x, y: adjusted_scores(x, y)[1], d_sim, ox)
+    else:
+        spike = d_obs >= np.quantile(d_obs, SPIKE_QUANTILE)
+        r, a = spearman(d_sim, d_obs), auc(d_sim, spike)
+        r_ci = block_ci(spearman, d_sim, d_obs)
+        a_ci = block_ci(lambda x, y: auc(x, y > 0.5), d_sim, spike.astype(float))
+    good = np.isfinite(a) and a >= VERDICT_MIN_AUC and np.isfinite(r_ci[0]) and r_ci[0] > 0
+    return {"n_days": n, "weather_adjusted": adjust, "obs_mean": float(p["obs"][ok].mean()),
+            "r_change": r, "r_change_ci": r_ci, "auc_spike": a, "auc_spike_ci": a_ci,
+            "verdict": "useful" if good else "not reliable here"}  # fmt: skip
 
 
 def added_value(train: dict, test: dict) -> dict:
@@ -448,12 +514,14 @@ def compute(conn) -> dict:
 
     conn.execute(STATION_SCHEMA)  # empty tables give "too few days", not a crash
     conn.execute(ARCHIVE_SCHEMA)
-    res = {"city": {}, "added": {}, "scale": {}, "ledger": {}, "stations": {}, "runs": {}}
+    res = {"city": {}, "added": {}, "scale": {}, "ledger": {}, "stations": {}, "runs": {},
+           "tracer": {}}  # fmt: skip
     P, t0s, all_obs, all_runs = {}, {}, {}, {}
     for season in SEASONS:
         t0, obs, ref, nst, cens, cams = load_series(conn, season)
         runs = load_runs(conn, season, t0, len(obs["Delhi"]))
         fw = fireworks_hours(season, t0, len(obs["Delhi"]))
+        tracers = load_tracers(conn, t0, len(obs["Delhi"]))
         t0s[season], all_obs[season], all_runs[season] = t0, obs, runs
         res["runs"][season] = len(runs["Delhi"])
         for city in config.RECEPTORS:
@@ -469,6 +537,10 @@ def compute(conn) -> dict:
                 P[(city, season, lead)] = p
                 res["city"][(city, season, lead)] = city_metrics(p)
             res["scale"][(city, season)] = scale_fit(P[(city, season, 1)])
+            nan = np.full(len(obs[city]), np.nan)
+            for name, series in tracers.items():
+                pt = pairs(series[city], nan, runs[city], 1, fw)
+                res["tracer"][(city, season, name)] = tracer_metrics(pt, TRACER_ADJUST[name])
         res["ledger"][season] = ledger_revision(conn, season)
     seasons = sorted(SEASONS)
     for city in config.RECEPTORS:
@@ -575,6 +647,33 @@ def report(res: dict) -> str:
                 f"({_ci(m['auc_spike_adj_ci'])}) | {m['verdict_total_change']} | "
                 f"**{m['verdict_adjusted']}** |"
             )
+    L += [
+        "",
+        "## Skill per city, smoke tracers (first 24 hours)",
+        "",
+        "Added 18 Nov 2026, rules fixed before any tracer result was seen. Total PM2.5 also "
+        "holds traffic, dust and still-air build-up, so two measured signals that follow smoke "
+        "more closely are scored, from the same reference stations. CO: carbon monoxide, which "
+        "fires give off (traffic too); the ventilation change is removed as above. Fine "
+        "fraction: PM2.5 ÷ PM10, which rises with smoke and falls with dust; a ratio is not "
+        "diluted by still air, so nothing is removed. Fireworks days are left out of both. "
+        "Same thresholds. These do not change the map's verdict.",
+        "",
+        "| City | Season | Tracer | Days | Change corr. (90% range) | Spike AUC (90% range) "
+        "| Verdict |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    label = {"co": "CO, weather-adjusted", "fine_fraction": "fine fraction"}
+    for (city, season, name), m in res.get("tracer", {}).items():
+        if "r_change" in m:
+            L.append(
+                f"| {city} | {season} | {label[name]} | {m['n_days']} | {_f(m['r_change'])} "
+                f"({_ci(m['r_change_ci'])}) | {_f(m['auc_spike'])} ({_ci(m['auc_spike_ci'])}) "
+                f"| **{m['verdict']}** |"
+            )
+        else:
+            L.append(f"| {city} | {season} | {label[name]} | {m['n_days']} | – | – "
+                     f"| {m['verdict']} |")  # fmt: skip
     L += [
         "",
         "## Skill by lead day",
@@ -760,6 +859,8 @@ def store(conn, res: dict) -> None:
     for season, by_city in res["ledger"].items():
         for city, m in by_city.items():
             conn.execute(ins, ("ledger", city, season, 0, _json(m)))
+    for (city, season, name), m in res.get("tracer", {}).items():
+        conn.execute(ins, (f"tracer_{name}", city, season, 1, _json(m)))
     for i, d in enumerate(res["dss"]):
         conn.execute(ins, ("dss", d["period"], 0, i, _json(d)))
     conn.commit()

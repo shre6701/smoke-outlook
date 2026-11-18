@@ -234,6 +234,7 @@ Target machine: Windows + WSL2, 16 GB RAM, no GPU, 20-50 GB free disk.
 - CAMS 2024–2025 loaded (`ingest.cams.archive`, called by hand: no command yet) and re-scored: CAMS change corr. 0.23–0.63, spike AUC ≥ 0.65 in 4 of 8 city-seasons. A total-pollution forecast catches rises; our fire-only one does not.
 - Season emission check (rough: per-day max pixel count of any one satellite × FINN area and fuel × 2.5 for day fires): Indian Punjab + Haryana, Oct–Nov, 4.6 Tg dry matter (2024), 2.0 Tg (2025). Against ~10 Tg/yr (Liu et al. 2020, scope not re-checked), emissions are about 2–5× low: part of the 7–18× gap, not all.
 - 5-day vs 7-day smoke on 3 days (2024-11-05, 2024-11-15, 2025-11-10): 7-day adds 0–16%, run time +35%. Keep 5 days.
+- Third target, smoke tracers (rules in DECISIONS before results): Spark job now also loads CO and PM10 (`archive_tracer_hourly`), 1–55 reference stations per city. 0 of 16 useful. Fine fraction change corr. −0.12 to 0.30 (Amritsar 2025 range above zero, AUC 0.59). Weather-adjusted CO change corr. −0.34 to 0.19, below zero with the range below zero in 3 of 8: odd, not yet explained (possibly the ventilation step, or traffic CO dominating).
 
 **Works** (all 74 tests pass, database tests included, 2026-11-16)
 - Late-afternoon fires: day fires burn 12:00–18:30 IST (peak 16:30) and count ×2.5 for unseen fires. Same in the live run and the hindcast.
@@ -251,7 +252,8 @@ Target machine: Windows + WSL2, 16 GB RAM, no GPU, 20-50 GB free disk.
 
 **Next**
 - Check the Liu et al. 2020 scope (area, months) before changing emissions; if it holds, a burn-completeness or area check on the FINN numbers.
-- Score against a smoke tracer (station CO or PM2.5/PM10) instead of total PM2.5.
+- Find out why weather-adjusted CO goes against simulated smoke (look at it unadjusted, labelled exploratory, not a new target).
+- The three targets agree: day-to-day timing is the weak part, not only the amount. Check plume arrival on a few well-known smoke days (wind path vs station rise) before tuning anything.
 - Still not done: time one live run.
 - Then Stage 3b.
 
