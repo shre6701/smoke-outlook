@@ -231,7 +231,9 @@ Target machine: Windows + WSL2, 16 GB RAM, no GPU, 20-50 GB free disk.
 - Simulation + persistence: −21% to +7% error change, no reliable gain.
 - Emission scale fit: Delhi 7–16×, Chandigarh 18×, Amritsar 0.8–2.5×: too low in the east, about right near the border.
 - Ledger share moves a lot day to day (Amritsar median 24–41 points).
-- CAMS comparison shows n/a: CAMS was not loaded into the new database.
+- CAMS 2024–2025 loaded (`ingest.cams.archive`, called by hand: no command yet) and re-scored: CAMS change corr. 0.23–0.63, spike AUC ≥ 0.65 in 4 of 8 city-seasons. A total-pollution forecast catches rises; our fire-only one does not.
+- Season emission check (rough: per-day max pixel count of any one satellite × FINN area and fuel × 2.5 for day fires): Indian Punjab + Haryana, Oct–Nov, 4.6 Tg dry matter (2024), 2.0 Tg (2025). Against ~10 Tg/yr (Liu et al. 2020, scope not re-checked), emissions are about 2–5× low: part of the 7–18× gap, not all.
+- 5-day vs 7-day smoke on 3 days (2024-11-05, 2024-11-15, 2025-11-10): 7-day adds 0–16%, run time +35%. Keep 5 days.
 
 **Works** (all 74 tests pass, database tests included, 2026-11-16)
 - Late-afternoon fires: day fires burn 12:00–18:30 IST (peak 16:30) and count ×2.5 for unseen fires. Same in the live run and the hindcast.
@@ -248,8 +250,9 @@ Target machine: Windows + WSL2, 16 GB RAM, no GPU, 20-50 GB free disk.
 - README now shows the re-score; earlier tables kept below it for comparison. The map reads the new skill from the database ("not reliable here" for all 4 cities).
 
 **Next**
-- Load CAMS for 2024–2025 into the new database and re-run `sim.validate` so the benchmark column is filled.
-- Still not done: compare 5-day and 7-day smoke on a few days; check the season emission total; time one live run.
+- Check the Liu et al. 2020 scope (area, months) before changing emissions; if it holds, a burn-completeness or area check on the FINN numbers.
+- Score against a smoke tracer (station CO or PM2.5/PM10) instead of total PM2.5.
+- Still not done: time one live run.
 - Then Stage 3b.
 
 ## Later

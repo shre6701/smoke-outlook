@@ -25,14 +25,14 @@ Change correlation: rank correlation between the simulated and the measured chan
 
 | City | Season | Days | Change corr. (90% range) | Spike AUC (90% range) | CAMS change corr. | CAMS spike AUC | Verdict |
 |---|---|---|---|---|---|---|---|
-| Delhi | 2024 | 61 | 0.18 (-0.08 to 0.45) | 0.60 (0.45 to 0.78) | n/a | n/a | **not reliable here** |
-| Chandigarh | 2024 | 61 | -0.06 (-0.29 to 0.16) | 0.36 (0.18 to 0.51) | n/a | n/a | **not reliable here** |
-| Amritsar | 2024 | 61 | 0.13 (-0.12 to 0.37) | 0.66 (0.53 to 0.79) | n/a | n/a | **not reliable here** |
-| Lucknow | 2024 | 61 | -0.03 (-0.16 to 0.15) | 0.50 (0.38 to 0.60) | n/a | n/a | **not reliable here** |
-| Delhi | 2025 | 61 | 0.19 (-0.04 to 0.38) | 0.56 (0.36 to 0.70) | n/a | n/a | **not reliable here** |
-| Chandigarh | 2025 | 56 | -0.25 (-0.44 to -0.07) | 0.40 (0.27 to 0.49) | n/a | n/a | **not reliable here** |
-| Amritsar | 2025 | 50 | 0.09 (-0.14 to 0.35) | 0.53 (0.39 to 0.70) | n/a | n/a | **not reliable here** |
-| Lucknow | 2025 | 56 | 0.19 (-0.02 to 0.41) | 0.57 (0.47 to 0.69) | n/a | n/a | **not reliable here** |
+| Delhi | 2024 | 61 | 0.18 (-0.08 to 0.45) | 0.60 (0.45 to 0.78) | 0.40 | 0.51 | **not reliable here** |
+| Chandigarh | 2024 | 61 | -0.06 (-0.29 to 0.16) | 0.36 (0.18 to 0.51) | 0.39 | 0.55 | **not reliable here** |
+| Amritsar | 2024 | 61 | 0.13 (-0.12 to 0.37) | 0.66 (0.53 to 0.79) | 0.23 | 0.52 | **not reliable here** |
+| Lucknow | 2024 | 61 | -0.03 (-0.16 to 0.15) | 0.50 (0.38 to 0.60) | 0.37 | 0.68 | **not reliable here** |
+| Delhi | 2025 | 61 | 0.19 (-0.04 to 0.38) | 0.56 (0.36 to 0.70) | 0.36 | 0.57 | **not reliable here** |
+| Chandigarh | 2025 | 56 | -0.25 (-0.44 to -0.07) | 0.40 (0.27 to 0.49) | 0.38 | 0.67 | **not reliable here** |
+| Amritsar | 2025 | 50 | 0.09 (-0.14 to 0.35) | 0.53 (0.39 to 0.70) | 0.23 | 0.68 | **not reliable here** |
+| Lucknow | 2025 | 56 | 0.19 (-0.02 to 0.41) | 0.57 (0.47 to 0.69) | 0.63 | 0.83 | **not reliable here** |
 
 CAMS here is the same-day CAMS forecast of total PM2.5 (all sources), so it has an easier job than a fire-only model and is not a like-for-like rival.
 
@@ -57,30 +57,30 @@ Level correlation: rank correlation of simulated fire smoke (with the what-if re
 
 | City | Season | Lead day | Level corr. | observed fires only | Persistence | CAMS | Change corr. | Spike AUC |
 |---|---|---|---|---|---|---|---|---|
-| Delhi | 2024 | 1 | 0.75 | 0.73 | 0.85 | n/a | 0.18 | 0.60 |
-| Delhi | 2024 | 2 | 0.74 | 0.65 | 0.79 | n/a | 0.13 | 0.54 |
-| Delhi | 2024 | 3 | 0.62 | 0.42 | 0.75 | n/a | 0.01 | 0.56 |
-| Chandigarh | 2024 | 1 | 0.64 | 0.60 | 0.89 | n/a | -0.06 | 0.36 |
-| Chandigarh | 2024 | 2 | 0.51 | 0.67 | 0.78 | n/a | -0.19 | 0.34 |
-| Chandigarh | 2024 | 3 | 0.35 | 0.65 | 0.72 | n/a | -0.08 | 0.40 |
-| Amritsar | 2024 | 1 | 0.46 | 0.48 | 0.68 | n/a | 0.13 | 0.66 |
-| Amritsar | 2024 | 2 | 0.49 | 0.32 | 0.62 | n/a | 0.22 | 0.68 |
-| Amritsar | 2024 | 3 | 0.38 | 0.11 | 0.54 | n/a | 0.12 | 0.58 |
-| Lucknow | 2024 | 1 | 0.74 | 0.73 | 0.87 | n/a | -0.03 | 0.50 |
-| Lucknow | 2024 | 2 | 0.68 | 0.71 | 0.74 | n/a | -0.01 | 0.42 |
-| Lucknow | 2024 | 3 | 0.71 | 0.75 | 0.68 | n/a | 0.09 | 0.60 |
-| Delhi | 2025 | 1 | 0.79 | 0.82 | 0.85 | n/a | 0.19 | 0.56 |
-| Delhi | 2025 | 2 | 0.75 | 0.69 | 0.72 | n/a | 0.22 | 0.51 |
-| Delhi | 2025 | 3 | 0.76 | 0.62 | 0.71 | n/a | 0.15 | 0.52 |
-| Chandigarh | 2025 | 1 | 0.67 | 0.57 | 0.77 | n/a | -0.25 | 0.40 |
-| Chandigarh | 2025 | 2 | 0.56 | 0.57 | 0.56 | n/a | -0.05 | 0.38 |
-| Chandigarh | 2025 | 3 | 0.35 | 0.45 | 0.37 | n/a | 0.13 | 0.52 |
-| Amritsar | 2025 | 1 | 0.37 | 0.36 | 0.60 | n/a | 0.09 | 0.53 |
-| Amritsar | 2025 | 2 | 0.49 | 0.21 | 0.45 | n/a | -0.00 | 0.48 |
-| Amritsar | 2025 | 3 | 0.49 | 0.37 | 0.44 | n/a | 0.16 | 0.70 |
-| Lucknow | 2025 | 1 | 0.74 | 0.74 | 0.80 | n/a | 0.19 | 0.57 |
-| Lucknow | 2025 | 2 | 0.70 | 0.73 | 0.65 | n/a | 0.13 | 0.51 |
-| Lucknow | 2025 | 3 | 0.64 | 0.65 | 0.52 | n/a | 0.18 | 0.53 |
+| Delhi | 2024 | 1 | 0.75 | 0.73 | 0.85 | 0.73 | 0.18 | 0.60 |
+| Delhi | 2024 | 2 | 0.74 | 0.65 | 0.79 | 0.73 | 0.13 | 0.54 |
+| Delhi | 2024 | 3 | 0.62 | 0.42 | 0.75 | 0.70 | 0.01 | 0.56 |
+| Chandigarh | 2024 | 1 | 0.64 | 0.60 | 0.89 | 0.77 | -0.06 | 0.36 |
+| Chandigarh | 2024 | 2 | 0.51 | 0.67 | 0.78 | 0.77 | -0.19 | 0.34 |
+| Chandigarh | 2024 | 3 | 0.35 | 0.65 | 0.72 | 0.75 | -0.08 | 0.40 |
+| Amritsar | 2024 | 1 | 0.46 | 0.48 | 0.68 | 0.52 | 0.13 | 0.66 |
+| Amritsar | 2024 | 2 | 0.49 | 0.32 | 0.62 | 0.52 | 0.22 | 0.68 |
+| Amritsar | 2024 | 3 | 0.38 | 0.11 | 0.54 | 0.49 | 0.12 | 0.58 |
+| Lucknow | 2024 | 1 | 0.74 | 0.73 | 0.87 | 0.78 | -0.03 | 0.50 |
+| Lucknow | 2024 | 2 | 0.68 | 0.71 | 0.74 | 0.77 | -0.01 | 0.42 |
+| Lucknow | 2024 | 3 | 0.71 | 0.75 | 0.68 | 0.77 | 0.09 | 0.60 |
+| Delhi | 2025 | 1 | 0.79 | 0.82 | 0.85 | 0.65 | 0.19 | 0.56 |
+| Delhi | 2025 | 2 | 0.75 | 0.69 | 0.72 | 0.64 | 0.22 | 0.51 |
+| Delhi | 2025 | 3 | 0.76 | 0.62 | 0.71 | 0.59 | 0.15 | 0.52 |
+| Chandigarh | 2025 | 1 | 0.67 | 0.57 | 0.77 | 0.56 | -0.25 | 0.40 |
+| Chandigarh | 2025 | 2 | 0.56 | 0.57 | 0.56 | 0.56 | -0.05 | 0.38 |
+| Chandigarh | 2025 | 3 | 0.35 | 0.45 | 0.37 | 0.52 | 0.13 | 0.52 |
+| Amritsar | 2025 | 1 | 0.37 | 0.36 | 0.60 | 0.13 | 0.09 | 0.53 |
+| Amritsar | 2025 | 2 | 0.49 | 0.21 | 0.45 | 0.14 | -0.00 | 0.48 |
+| Amritsar | 2025 | 3 | 0.49 | 0.37 | 0.44 | 0.30 | 0.16 | 0.70 |
+| Lucknow | 2025 | 1 | 0.74 | 0.74 | 0.80 | 0.78 | 0.19 | 0.57 |
+| Lucknow | 2025 | 2 | 0.70 | 0.73 | 0.65 | 0.75 | 0.13 | 0.51 |
+| Lucknow | 2025 | 3 | 0.64 | 0.65 | 0.52 | 0.73 | 0.18 | 0.53 |
 
 ## Skill per region
 

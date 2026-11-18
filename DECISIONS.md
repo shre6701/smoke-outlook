@@ -145,3 +145,5 @@ One line each: what — why — alternative.
 - Each hindcast run now stores forecast ventilation (boundary-layer height × 10 m wind) per city and hour — needed for the second target, weather only — alternative: re-read weather files at scoring time.
 - Station archive download retries 500/503 and connection errors up to 4 times with backoff — the OpenAQ S3 archive returned a 500 mid-run and killed the whole fetch — alternative: skip failed days (would silently drop measurements).
 - Re-score kept the thresholds and both targets unchanged; result (0 of 4 useful) published as is — rules were fixed before results — alternative: none considered.
+- Smoke age kept at 5 days — 7 days on 3 sample days added 0–16% smoke for +35% run time — alternative: 7 days.
+- Emission per detection still unchanged after the season check (about 2–5× below one inventory) — the inventory scope is not yet checked, and raising emissions alone cannot fix timing skill — alternative: scale up now.
